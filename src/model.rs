@@ -20,6 +20,10 @@ pub const CLASS: &str = "http://www.w3.org/2002/07/owl#Class";
 pub const OBJECT_PROPERTY: &str = "http://www.w3.org/2002/07/owl#ObjectProperty";
 pub const DATA_PROPERTY: &str = "http://www.w3.org/2002/07/owl#DataProperty";
 pub const ANNOTATION_PROPERTY: &str = "http://www.w3.org/2002/07/owl#AnnotationProperty";
+pub const AXIOM: &str = "http://www.w3.org/2002/07/owl#Axiom";
+pub const ANNOTATED_SOURCE: &str = "http://www.w3.org/2002/07/owl#annotatedSource";
+pub const ANNOTATED_PROPERTY: &str = "http://www.w3.org/2002/07/owl#annotatedProperty";
+pub const ANNOTATED_TARGET: &str = "http://www.w3.org/2002/07/owl#annotatedTarget";
 pub const DEPRECATED: &str = "http://www.w3.org/2002/07/owl#deprecated";
 pub const OWL_TYPES: [&str; 6] = [
     ONTOLOGY,
@@ -33,38 +37,39 @@ pub const OWL_TYPES: [&str; 6] = [
 // TODO: Make this a proper error.
 pub type Error = String;
 type JSONError = serde_json::Error;
+type Annotations = Vec<IndexMap<String, Vec<Object>>>;
 
 // JSON-LD with serde_json
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Object {
     ID {
         #[serde(rename = "@id")]
         id: String,
-        #[serde(rename = "@annotation", skip_serializing_if = "Option::is_none")]
-        annotation: Option<String>,
+        #[serde(rename = "@annotations", skip_serializing_if = "Vec::is_empty")]
+        annotations: Annotations,
     },
     LanguageLiteral {
         #[serde(rename = "@value")]
         value: String,
         #[serde(rename = "@language")]
         language: String,
-        #[serde(rename = "@annotation", skip_serializing_if = "Option::is_none")]
-        annotation: Option<String>,
+        #[serde(rename = "@annotations", skip_serializing_if = "Vec::is_empty")]
+        annotations: Annotations,
     },
     TypedLiteral {
         #[serde(rename = "@value")]
         value: String,
         #[serde(rename = "@type")]
         datatype: String,
-        #[serde(rename = "@annotation", skip_serializing_if = "Option::is_none")]
-        annotation: Option<String>,
+        #[serde(rename = "@annotations", skip_serializing_if = "Vec::is_empty")]
+        annotations: Annotations,
     },
     List {
         #[serde(rename = "@list")]
         list: Vec<Object>,
-        #[serde(rename = "@annotation", skip_serializing_if = "Option::is_none")]
-        annotation: Option<String>,
+        #[serde(rename = "@annotations", skip_serializing_if = "Vec::is_empty")]
+        annotations: Annotations,
     },
     Map(BTreeMap<String, Objects>),
     // TODO: RDF set ?
@@ -88,7 +93,7 @@ impl Object {
     pub fn id(id: &str) -> Self {
         Self::ID {
             id: id.to_string(),
-            annotation: None,
+            annotations: vec![],
         }
     }
 
@@ -96,34 +101,34 @@ impl Object {
         Self::LanguageLiteral {
             value: value.to_string(),
             language: language.strip_prefix("@").unwrap_or(language).to_string(),
-            annotation: None,
+            annotations: vec![],
         }
     }
     pub fn typed(value: &str, datatype: &str) -> Self {
         Self::TypedLiteral {
             value: value.to_string(),
             datatype: datatype.to_string(),
-            annotation: None,
+            annotations: vec![],
         }
     }
     pub fn string(value: &str) -> Self {
         Self::TypedLiteral {
             value: value.to_string(),
             datatype: STRING.to_string(),
-            annotation: None,
+            annotations: vec![],
         }
     }
     pub fn plain(value: &str) -> Self {
         Self::TypedLiteral {
             value: value.to_string(),
             datatype: PLAIN.to_string(),
-            annotation: None,
+            annotations: vec![],
         }
     }
     pub fn list(objects: &Objects) -> Self {
         Self::List {
             list: objects.clone(),
-            annotation: None,
+            annotations: vec![],
         }
     }
     pub fn map(map: &BTreeMap<String, Objects>) -> Self {
@@ -132,7 +137,7 @@ impl Object {
     pub fn new_list() -> Self {
         Self::List {
             list: Vec::new(),
-            annotation: None,
+            annotations: vec![],
         }
     }
     pub fn new_map() -> Self {
@@ -171,15 +176,25 @@ impl Object {
     // This is either empty or a JSON object.
     pub fn annotation(&self) -> String {
         let annotation = match self {
-            Self::ID { annotation, .. } => annotation,
-            Self::LanguageLiteral { annotation, .. } => annotation,
-            Self::TypedLiteral { annotation, .. } => annotation,
-            Self::List { .. } => &None,
-            Self::Map(_) => &None,
+            Self::ID {
+                annotations: annotation,
+                ..
+            } => annotation,
+            Self::LanguageLiteral {
+                annotations: annotation,
+                ..
+            } => annotation,
+            Self::TypedLiteral {
+                annotations: annotation,
+                ..
+            } => annotation,
+            Self::List { .. } => &Vec::new(),
+            Self::Map(_) => &Vec::new(),
         };
-        match annotation {
-            Some(annotation) => json!(annotation).to_string(),
-            None => String::new(),
+        if annotation.is_empty() {
+            String::new()
+        } else {
+            json!(annotation).to_string()
         }
     }
 
@@ -203,16 +218,29 @@ impl Object {
             }
         }
     }
+
+    pub fn annotate(&mut self, subject: &Subject) {
+        let mut map = IndexMap::new();
+        for (predicate, objects) in subject.predicates() {
+            map.insert(predicate, objects);
+        }
+        let map = vec![map];
+        match self {
+            Self::ID { annotations, .. } => *annotations = map,
+            Self::LanguageLiteral { annotations, .. } => *annotations = map,
+            Self::TypedLiteral { annotations, .. } => *annotations = map,
+            _ => (),
+        };
+    }
 }
 
 pub type Objects = Vec<Object>;
-pub type Annotations = BTreeMap<String, Objects>;
 
 // A Subject has an ID and a set of Pairs.
 // It is the equivalent to a set of Triples with the same subject.
 // Semantically it's a set of Pairs,
 // but our implementation retains order.
-#[derive(Clone, Debug, Default, PartialOrd, Ord, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Subject {
     // TODO: handle blank nodes
     name: String,
@@ -479,7 +507,7 @@ pub trait Graph {
     fn from_id(id: &str) -> Self;
     fn id(&self) -> String;
     fn set_id(&mut self, id: &str);
-    fn annotations(&self, id: &str) -> BTreeMap<Subject, Objects>;
+    // fn annotations(&self, id: &str) -> BTreeMap<Subject, Objects>;
     fn signature(&self) -> BTreeSet<String>;
     fn extend(&mut self, subjects: Vec<Subject>) -> bool;
     // fn parents(&self, id: &str, restrictions: &Vec<String>) -> Vec<Subject>;
@@ -499,7 +527,7 @@ pub trait Graph {
 }
 
 // A MemoryGraph simply stores its subjects in memory.
-#[derive(Clone, Debug, Default, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemoryGraph {
     id: String,
     subjects: BTreeMap<String, Subject>,
@@ -549,6 +577,35 @@ impl Graph for MemoryGraph {
     }
 
     fn insert(&mut self, subject: &Subject) -> bool {
+        // if type is AXIOM
+        // try to get subject: annotatedSource
+        // try to get predicate: annotatedProperty
+        // try to match object: annotatedTarget
+        // mutate object: annotate with subject minus annotated*
+        if subject.has_type(AXIOM) {
+            if let (Some(source), Some(property), Some(target)) = (
+                subject.get(ANNOTATED_SOURCE).first().clone(),
+                subject.get(ANNOTATED_PROPERTY).first().clone(),
+                subject.get(ANNOTATED_TARGET).first().clone(),
+            ) {
+                let mut copy = Subject::new();
+                for (p, o) in subject.pairs.iter() {
+                    if [ANNOTATED_SOURCE, ANNOTATED_PROPERTY, ANNOTATED_TARGET]
+                        .contains(&p.as_str())
+                    {
+                        continue;
+                    }
+                    copy.insert(&p, &o.clone());
+                }
+                if let Some(s) = self.get_mut(&source.object()) {
+                    for (p, o) in s.pairs.iter_mut() {
+                        if *p == property.object() && o == *target {
+                            o.annotate(&copy);
+                        }
+                    }
+                }
+            }
+        }
         self.subjects.insert(subject.name(), subject.clone());
         true
     }
@@ -627,25 +684,6 @@ impl Graph for MemoryGraph {
             .filter(|s| s.has_type(rdf_type))
             .map(|s| s.extract(&predicates))
             .collect()
-    }
-
-    // A map from predicate to object,
-    // where the predicate is treated as a Subject, with label and type.
-    fn annotations(&self, id: &str) -> BTreeMap<Subject, Objects> {
-        let predicates = vec![TYPE, LABEL];
-        let mut annotations = BTreeMap::new();
-        if let Some(subject) = self.get(id) {
-            for (predicate, objects) in subject.predicates() {
-                annotations.insert(
-                    match self.get(&predicate) {
-                        Some(subject) => subject.extract(&predicates),
-                        None => Subject::from_name(&predicate),
-                    },
-                    objects,
-                );
-            }
-        }
-        annotations
     }
 
     // Given a subject ID,
