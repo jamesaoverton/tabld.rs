@@ -1,0 +1,446 @@
+// Read and write RDFXML like OWL API does.
+
+use quick_xml::Error as XMLError;
+use quick_xml::events::attributes::Attribute;
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::name::QName;
+use quick_xml::reader::Reader;
+use std::collections::BTreeMap;
+
+use crate::model::{Graph, MemoryGraph, Object, Objects, Subject};
+
+const DEBUG: bool = false;
+
+pub type Prefixes = BTreeMap<String, String>;
+
+// Read prefixes from an attribute_raw() string
+fn read_prefixes(content: &str) -> Result<Prefixes, XMLError> {
+    let mut prefixes = BTreeMap::new();
+    let name = "root";
+    let elem = BytesStart::from_content(format!("{name}{content}"), name.len());
+    for attr in elem.attributes() {
+        match attr {
+            Ok(attr) => match attr.key.prefix() {
+                Some(p) => {
+                    if p.into_inner() == "xmlns".as_bytes() {
+                        let prefix = String::from_utf8(attr.key.local_name().into_inner().to_vec())
+                            .expect("Valid local name");
+                        let iri = String::from_utf8(attr.value.into_owned())
+                            .expect("Valid attribute value");
+                        prefixes.insert(prefix, iri);
+                    }
+                }
+                None => continue,
+            },
+            Err(_) => continue,
+        }
+    }
+    Ok(prefixes)
+}
+
+fn expand(prefixes: &Prefixes, curie: &str) -> String {
+    match curie.split_once(":") {
+        Some((prefix, local_name)) => {
+            if prefixes.contains_key(prefix) {
+                format!("{}{local_name}", prefixes.get(prefix).unwrap())
+            } else {
+                curie.to_string()
+            }
+        }
+        None => curie.to_string(),
+    }
+}
+
+// Read the
+fn read_qname(qname: QName<'_>) -> String {
+    format!(
+        "{}:{}",
+        str::from_utf8(qname.prefix().expect("Nonempty prefix").into_inner())
+            .expect("Valid prefix"),
+        str::from_utf8(qname.local_name().into_inner()).expect("Valid local name")
+    )
+}
+
+// Read an attribute value to a string
+fn read_attr(a: Attribute<'_>) -> String {
+    String::from_utf8(a.value.into_owned()).expect("Valid attribute value")
+}
+
+// Read a string into a vector of Statements.
+pub fn read(input: &str) -> Result<MemoryGraph, XMLError> {
+    let mut reader = Reader::from_str(input);
+
+    // TODO: generalize this
+    let name = "http://example.com/graph";
+    let mut graph = MemoryGraph::from_id(name);
+
+    // root rdf:RDF element
+    let start;
+    loop {
+        match reader.read_event()? {
+            Event::Start(event) => {
+                start = event.clone();
+                break;
+            }
+            Event::Eof => panic!("No root element"),
+            _ => (),
+        }
+    }
+    let qname = read_qname(start.name());
+    if qname != "rdf:RDF" {
+        panic!("Document does not use RDFXML format");
+    }
+
+    let value = str::from_utf8(start.attributes_raw()).expect("Valid attributes");
+    let prefixes = read_prefixes(&value)?;
+
+    // Store prefixes
+    let name = expand(&prefixes, name);
+    let mut doc = Subject::from_name(&name);
+    doc.insert(
+        "http://example.com/rdf_declarations",
+        &Object::string(value),
+    );
+
+    loop {
+        match reader.read_event() {
+            Err(e) => panic!("Error at position {}: {:?}", reader.error_position(), e),
+
+            // exits the loop when reaching end of file
+            Ok(Event::Eof) => {
+                graph.insert(&doc);
+                return Ok(graph);
+            }
+
+            // A Subject with predicates.
+            Ok(Event::Start(start)) => {
+                let subject = read_subject(&mut reader, &prefixes, &start, 1)?;
+                if subject.has_type("http://www.w3.org/2002/07/owl#Ontology") {
+                    graph.set_id(&subject.name());
+                }
+                graph.insert(&subject);
+            }
+
+            // A Subject with only an rdf:type predicate.
+            Ok(Event::Empty(start)) => {
+                let qname = read_qname(start.name());
+                let iri = match start.try_get_attribute("rdf:about")? {
+                    Some(a) => {
+                        String::from_utf8(a.value.into_owned()).expect("Valid attribute value")
+                    }
+                    None => panic!("Top-level <{qname}/> element missing rdf:about attribute"),
+                };
+                if DEBUG {
+                    println!(r#"    <{qname} rdf:about="{iri}"/>"#);
+                }
+                let rdf_type = &expand(&prefixes, &qname);
+                let mut subject = Subject::from_name(&iri);
+                subject.insert_type(rdf_type);
+                if subject.has_type("http://www.w3.org/2002/07/owl#Ontology") {
+                    graph.set_id(&subject.name());
+                }
+                graph.insert(&subject);
+            }
+
+            // Store this special final comment generated by OWL API.
+            Ok(Event::Comment(comment)) => {
+                let comment = comment.decode().expect("Valid text").into_owned();
+                if comment.starts_with(" Generated by the OWL API (version ") {
+                    doc.insert(
+                        "http://example.com/rdf_generator",
+                        &Object::string(&comment),
+                    );
+                }
+            }
+
+            _ => (),
+        }
+    }
+}
+
+// Read a BytesStart from a non-empty start element as a Subject.
+fn read_subject(
+    reader: &mut Reader<&[u8]>,
+    prefixes: &Prefixes,
+    start: &BytesStart<'_>,
+    depth: usize,
+) -> Result<Subject, XMLError> {
+    let qname = read_qname(start.name());
+    let rdf_type = expand(&prefixes, &qname);
+    let mut subject = Subject::from_type(&rdf_type);
+
+    // The rdf:about attribute holds the Subject's id,
+    // if it exists.
+    match start.try_get_attribute("rdf:about")? {
+        Some(a) => {
+            let name = String::from_utf8(a.value.into_owned()).expect("Valid attribute value");
+            subject.set_name(&name);
+        }
+        None => (),
+    };
+    if DEBUG {
+        if subject.name() != "" {
+            println!(
+                r#"{}<{qname} rdf:about="{}">"#,
+                "    ".repeat(depth),
+                subject.name()
+            );
+        } else {
+            println!("{}<{qname}>", "    ".repeat(depth));
+        }
+    }
+    loop {
+        match reader.read_event()? {
+            Event::Start(event) => {
+                // could be: lang literal, typed literal, plain literal, collection of objects, or a single anonymous nested subject
+                let qname = read_qname(event.name());
+                let predicate = expand(&prefixes, &qname);
+                let object = read_object(reader, &prefixes, &event, depth + 1)?;
+                subject.insert(&predicate, &object);
+            }
+            Event::Empty(event) => {
+                // must be an IRI in an rdf:resource
+                // or a blank node with an rdf:nodeID
+                let qname = read_qname(event.name());
+                let predicate = expand(&prefixes, &qname);
+                match event.try_get_attribute("rdf:resource")? {
+                    Some(a) => {
+                        let iri: String = read_attr(a);
+                        if DEBUG {
+                            println!(
+                                r#"{}<{qname} rdf:resource="{iri}"/>"#,
+                                "    ".repeat(depth + 1)
+                            );
+                        }
+                        subject.insert(&predicate, &Object::id(&iri));
+                    }
+                    None => match event.try_get_attribute("rdf:nodeID")? {
+                        Some(a) => {
+                            let id: String = read_attr(a);
+                            if DEBUG {
+                                println!(
+                                    r#"{}<{qname} rdf:nodeID="{id}"/>"#,
+                                    "    ".repeat(depth + 1)
+                                );
+                            }
+                            subject.insert(&predicate, &Object::id(&id));
+                        }
+                        None => panic!(
+                            "Empty <{qname}/> predicate without rdf:resource or rdf:nodeID at {}",
+                            reader.buffer_position()
+                        ),
+                    },
+                };
+            }
+            Event::Text(event) => {
+                let text = event.decode().expect("Valid text").into_owned();
+                if !text.trim().is_empty() {
+                    panic!(
+                        "Unexpected non-whitespace text between predicates at {}: {text}",
+                        reader.buffer_position()
+                    );
+                }
+            }
+            Event::GeneralRef(_) => {
+                panic!(
+                    "Unexpected entity between predicates at {}",
+                    reader.buffer_position()
+                );
+            }
+            Event::End(event) => {
+                if DEBUG {
+                    let qname = read_qname(event.name());
+                    println!("{}</{qname}>", "    ".repeat(depth));
+                }
+                break;
+            }
+            _ => (),
+        }
+    }
+    Ok(subject)
+}
+
+// Read a BytesStart from a non-empty start element as an Object.
+fn read_object(
+    reader: &mut Reader<&[u8]>,
+    prefixes: &Prefixes,
+    start: &BytesStart<'_>,
+    depth: usize,
+) -> Result<Object, XMLError> {
+    let qname = read_qname(start.name());
+    let predicate = expand(&prefixes, &qname);
+
+    // LanguageLiteral
+    if let Some(a) = start.try_get_attribute("xml:lang")? {
+        let language = read_attr(a);
+        if DEBUG {
+            print!(r#"{}<{qname} xml:lang="{language}">"#, "    ".repeat(depth));
+        }
+        let value = read_text(reader)?;
+        return Ok(Object::lang(&value, &language));
+    };
+
+    // TypedLiteral
+    if let Some(a) = start.try_get_attribute("rdf:datatype")? {
+        let datatype = String::from_utf8(a.value.into_owned()).expect("Valid attribute value");
+        if DEBUG {
+            print!(
+                r#"{}<{qname} rdf:datatype="{datatype}">"#,
+                "    ".repeat(depth)
+            );
+        }
+        let value = read_text(reader)?;
+        return Ok(Object::typed(&value, &datatype));
+    };
+
+    // list of objects
+    if let Some(a) = start.try_get_attribute("rdf:parseType")? {
+        let parse_type = String::from_utf8(a.value.into_owned()).expect("Valid attribute value");
+        if DEBUG {
+            println!(
+                "{}<{qname} rdf:parseType=\"{parse_type}\">",
+                "    ".repeat(depth)
+            );
+        }
+        if parse_type != "Collection" {
+            panic!("element {predicate} has unknown rdf:parseType: {parse_type}");
+        }
+        let objects = read_objects(reader, &prefixes, depth)?;
+        return Ok(Object::list(&objects));
+    };
+
+    // Is next event text/ref (PLAIN) or element (rdf:type)?
+    loop {
+        match reader.read_event()? {
+            // single anonymous nested subject
+            Event::Start(inner_start) => {
+                if DEBUG {
+                    println!("{}<{qname}>", "    ".repeat(depth));
+                }
+                let subject2 = read_subject(reader, &prefixes, &inner_start, depth + 1)?;
+                reader.read_to_end(start.name())?; // skip to end
+                if DEBUG {
+                    println!("{}</{qname}>", "    ".repeat(depth));
+                }
+                return Ok(Object::Map(subject2.predicates()));
+            }
+            // PLAIN literal
+            Event::Text(event) => {
+                let text = event.decode().expect("Valid text").into_owned();
+                if text.trim().is_empty() {
+                    // continue to the next non-whitespace
+                    continue;
+                }
+                if DEBUG {
+                    print!("{}<{qname}>{text}", "    ".repeat(depth));
+                }
+                let content = read_text(reader)?;
+                return Ok(Object::plain(&format!("{text}{content}")));
+            }
+            // PLAIN literal starting with entity
+            Event::GeneralRef(event) => {
+                let mut text = event.decode().expect("Valid text").into_owned();
+                text = format!("&{text};");
+                if DEBUG {
+                    print!("{text}");
+                }
+                let content = read_text(reader)?;
+                return Ok(Object::plain(&format!("{text}{content}")));
+            }
+            // PLAIN literal with the empty string
+            // Could this possibly be an empty subject?
+            Event::End(event2) => {
+                if DEBUG {
+                    let qname2 = read_qname(event2.name());
+                    print!("</{qname2}>");
+                }
+                return Ok(Object::plain(""));
+            }
+            _ => panic!("Unexpected event {start:?}"),
+        }
+    }
+}
+
+// Read a series of objects.
+fn read_objects(
+    reader: &mut Reader<&[u8]>,
+    prefixes: &Prefixes,
+    depth: usize,
+) -> Result<Objects, XMLError> {
+    let mut objects = Vec::new();
+    loop {
+        match reader.read_event()? {
+            // an rdf:type for an anonymous nested subject
+            Event::Start(start) => {
+                let subject = read_subject(reader, &prefixes, &start, depth + 1)?;
+                objects.push(Object::Map(subject.predicates()));
+            }
+            // an rdf:Description element
+            Event::Empty(event) => {
+                let qname = read_qname(event.name());
+                let iri = match event.try_get_attribute("rdf:about")? {
+                    Some(a) => read_attr(a),
+                    // None => panic!("{qname} element missing rdf:about attribute"),
+                    None => String::new(),
+                };
+                if DEBUG {
+                    println!(
+                        r#"{}<{qname} rdf:about="{iri}"/>"#,
+                        "    ".repeat(depth + 1)
+                    );
+                }
+                objects.push(Object::id(&iri));
+            }
+            Event::End(event) => {
+                if DEBUG {
+                    let qname = read_qname(event.name());
+                    println!("{}</{qname}>", "    ".repeat(depth));
+                }
+                break;
+            }
+            _ => (),
+        }
+    }
+    Ok(objects)
+}
+
+// Read the text content of a literal
+fn read_text(reader: &mut Reader<&[u8]>) -> Result<String, XMLError> {
+    // This is only used for DEBUGing.
+    let mut content: Vec<String> = Vec::new();
+    loop {
+        match reader.read_event()? {
+            Event::Text(event) => {
+                let text = event.decode().expect("Valid text").into_owned();
+                if DEBUG {
+                    print!("{text}");
+                }
+                content.push(text);
+            }
+            Event::GeneralRef(event) => {
+                let mut text = event.decode().expect("Valid text").into_owned();
+                text = format!("&{text};");
+                if DEBUG {
+                    print!("{text}");
+                }
+                content.push(text);
+            }
+            Event::End(event) => {
+                if DEBUG {
+                    let qname = read_qname(event.name());
+                    println!("</{qname}>");
+                };
+                return Ok(content.join(""));
+            }
+            Event::Start(event) => {
+                let qname = read_qname(event.name());
+                panic!("start element <{qname}> inside literal");
+            }
+            Event::Empty(event) => {
+                let qname = read_qname(event.name());
+                panic!("empty element <{qname}/> inside literal");
+            }
+            _ => (),
+        }
+    }
+}
