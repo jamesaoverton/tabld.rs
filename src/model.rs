@@ -185,6 +185,13 @@ impl Object {
         }
     }
 
+    pub fn as_id(&self) -> Option<&String> {
+        match self {
+            Object::ID { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+
     // Return the string that goes into the "object" field of a Statement.
     // Usually this is just a string.
     // For the complex object types,
@@ -227,16 +234,16 @@ impl Object {
 
     // Return a set of all IRIs used in this object, recursively.
     // TODO: Only IRIs not blank nodes?
-    pub fn signature(&self) -> IndexSet<String> {
+    pub fn signature(&self) -> IndexSet<&String> {
         match self {
-            Object::ID { id, .. } => IndexSet::from([id.to_string()]),
+            Object::ID { id, .. } => IndexSet::from([id]),
             Object::LanguageLiteral { .. } => IndexSet::new(),
-            Object::TypedLiteral { datatype, .. } => IndexSet::from([datatype.to_string()]),
+            Object::TypedLiteral { datatype, .. } => IndexSet::from([datatype]),
             Object::List { list, .. } => list.iter().map(|o| o.signature()).flatten().collect(),
             Object::Map(map) => {
                 let mut set = IndexSet::new();
                 for (predicate, objects) in map {
-                    set.insert(predicate.to_string());
+                    set.insert(predicate);
                     for object in objects {
                         set.extend(object.signature());
                     }
@@ -493,23 +500,20 @@ impl Subject {
 
     // Return a set of all IRIs used in all the pairs of this Subject,
     // and its own IRI (if not empty).
-    pub fn signature(&self) -> IndexSet<String> {
+    pub fn signature(&self) -> IndexSet<&String> {
         let mut set = IndexSet::new();
         if self.name != "" {
-            set.insert(self.name.to_string());
+            set.insert(&self.name);
         }
         for (p, o) in &self.pairs {
-            set.insert(p.to_string());
+            set.insert(p);
             set.extend(o.signature());
         }
         set
     }
 
-    pub fn triples(&self) -> IndexSet<(String, String, Object)> {
-        self.pairs
-            .iter()
-            .map(|(p, o)| (self.name.to_string(), p.to_string(), o.clone()))
-            .collect()
+    pub fn triples(&self) -> IndexSet<(&String, &String, &Object)> {
+        self.pairs.iter().map(|(p, o)| (&self.name, p, o)).collect()
     }
 }
 
@@ -537,26 +541,27 @@ impl Into<Value> for Subject {
 // The simplest Graph is in-memory,
 // but we also want to support querying subjects from a database table.
 pub trait Graph {
-    fn get_mut(&mut self, id: &str) -> Option<&mut Subject>;
     fn new() -> Self;
     fn from_id(id: &str) -> Self;
     fn id(&self) -> String;
     fn set_id(&mut self, id: &str);
-    // fn annotations(&self, id: &str) -> IndexMap<Subject, Objects>;
-    fn signature(&self) -> IndexSet<String>;
-    fn extend(&mut self, subjects: impl IntoIterator<Item = Subject>) -> bool;
-    // fn parents(&self, id: &str, restrictions: &Vec<String>) -> Vec<Subject>;
-    fn parents(&self, id: &str) -> IndexSet<String>;
-    fn individuals(&self, rdf_type: &str) -> IndexSet<String>;
-    fn children(&self, id: &str) -> IndexSet<String>;
-    // fn ancestors(&self, id: &str, restrictions: &Vec<String>) -> Vec<Subject>;
-    fn ancestors(&self, id: &str) -> IndexSet<String>;
-    fn extract(&self, id: &str, predicates: &Vec<&str>) -> Option<Subject>;
-    fn insert(&mut self, subject: &Subject) -> bool;
     fn subjects(&self) -> IndexSet<&Subject>;
-    fn get(&self, id: &str) -> Option<Subject>;
+    fn insert(&mut self, subject: Subject) -> bool;
+    fn extend(&mut self, subjects: impl IntoIterator<Item = Subject>) -> bool;
+    fn get(&self, id: &str) -> Option<&Subject>;
+    fn get_mut(&mut self, id: &str) -> Option<&mut Subject>;
+
+    // fn annotations(&self, id: &str) -> IndexMap<Subject, Objects>;
+    fn signature(&self) -> IndexSet<&String>;
+    // fn parents(&self, id: &str, restrictions: &Vec<String>) -> Vec<Subject>;
+    fn parents(&self, id: &str) -> IndexSet<&String>;
+    fn individuals(&self, rdf_type: &str) -> IndexSet<&String>;
+    fn children(&self, id: &str) -> IndexSet<&String>;
+    // fn ancestors(&self, id: &str, restrictions: &Vec<String>) -> Vec<Subject>;
+    fn ancestors(&self, id: &str) -> IndexSet<&String>;
+    fn extract(&self, id: &str, predicates: &Vec<&str>) -> Option<Subject>;
     // fn subject_graph(&self, id: &str) -> Option<MemoryGraph>;
-    fn triples(&self) -> IndexSet<(String, String, Object)>;
+    fn triples(&self) -> IndexSet<(&String, &String, &Object)>;
     // types
     // labels
 }
@@ -595,15 +600,15 @@ impl Graph for MemoryGraph {
     }
 
     // Return the matching subject, if it exists.
-    fn get(&self, id: &str) -> Option<Subject> {
-        self.subjects.get(id).cloned()
+    fn get(&self, id: &str) -> Option<&Subject> {
+        self.subjects.get(id)
     }
 
     fn get_mut(&mut self, id: &str) -> Option<&mut Subject> {
         self.subjects.get_mut(id)
     }
 
-    fn signature(&self) -> IndexSet<String> {
+    fn signature(&self) -> IndexSet<&String> {
         let mut signature = IndexSet::new();
         for subject in self.subjects() {
             signature.extend(subject.signature());
@@ -611,7 +616,7 @@ impl Graph for MemoryGraph {
         signature
     }
 
-    fn insert(&mut self, subject: &Subject) -> bool {
+    fn insert(&mut self, subject: Subject) -> bool {
         // if type is AXIOM
         // try to get subject: annotatedSource
         // try to get predicate: annotatedProperty
@@ -634,7 +639,7 @@ impl Graph for MemoryGraph {
                 }
                 if let Some(s) = self.get_mut(&source.object()) {
                     for (p, o) in s.pairs.clone() {
-                        if *p == property.object() && o == **target {
+                        if p == *property.object() && o == **target {
                             let mut o2 = o.clone();
                             o2.annotate(&copy);
                             let i = s.pairs.get_index_of(&(p.to_string(), o)).unwrap();
@@ -645,13 +650,13 @@ impl Graph for MemoryGraph {
                 }
             }
         }
-        self.subjects.insert(subject.name(), subject.clone());
+        self.subjects.insert(subject.name(), subject);
         true
     }
 
     fn extend(&mut self, subjects: impl IntoIterator<Item = Subject>) -> bool {
         for subject in subjects {
-            self.insert(&subject);
+            self.insert(subject);
         }
         true
     }
@@ -661,7 +666,7 @@ impl Graph for MemoryGraph {
         self.get(id).and_then(|s| Some(s.extract(predicates)))
     }
 
-    fn parents(&self, id: &str) -> IndexSet<String> {
+    fn parents(&self, id: &str) -> IndexSet<&String> {
         let subject = match self.get(id) {
             Some(subject) => subject,
             None => return IndexSet::new(),
@@ -671,13 +676,13 @@ impl Graph for MemoryGraph {
             .iter()
             .filter(|(p, _)| p == SUBCLASSOF)
             .filter_map(|(_, o)| match o {
-                Object::ID { id, .. } => Some(id.clone()),
+                Object::ID { id, .. } => Some(id),
                 _ => None,
             })
             .collect()
     }
 
-    fn ancestors(&self, id: &str) -> IndexSet<String> {
+    fn ancestors(&self, id: &str) -> IndexSet<&String> {
         // TODO: restrictions
         let mut results = IndexSet::new();
         let mut r = 0;
@@ -700,21 +705,21 @@ impl Graph for MemoryGraph {
     }
 
     // WARN: This is relatively slow.
-    fn children(&self, id: &str) -> IndexSet<String> {
+    fn children(&self, id: &str) -> IndexSet<&String> {
         self.subjects()
             .iter()
             .filter(|s| s.contains(SUBCLASSOF, &Object::id(id)))
-            .map(|s| s.id().object())
+            .map(|s| &s.name)
             .collect()
     }
 
     // All subjects in the graph that have this subject
     // as on of their rdf:types.
-    fn individuals(&self, rdf_type: &str) -> IndexSet<String> {
+    fn individuals(&self, rdf_type: &str) -> IndexSet<&String> {
         self.subjects()
             .iter()
             .filter(|s| s.has_type(rdf_type))
-            .map(|s| s.id().object())
+            .map(|s| &s.name)
             .collect()
     }
 
@@ -745,7 +750,7 @@ impl Graph for MemoryGraph {
     //     Some(graph)
     // }
 
-    fn triples(&self) -> IndexSet<(String, String, Object)> {
+    fn triples(&self) -> IndexSet<(&String, &String, &Object)> {
         self.subjects()
             .iter()
             .map(|s| s.triples())
@@ -778,10 +783,10 @@ impl Into<Value> for MemoryGraph {
 pub struct IndexedMemoryGraph {
     id: String,
     graph: MemoryGraph,
-    parent_children: IndexMap<String, Vec<String>>,
-    child_parents: IndexMap<String, Vec<String>>,
-    name_subjects: IndexMap<String, Vec<String>>,
-    roots: IndexMap<String, Vec<String>>,
+    parent_children: IndexMap<String, IndexSet<String>>,
+    child_parents: IndexMap<String, IndexSet<String>>,
+    name_subjects: IndexMap<String, IndexSet<String>>,
+    roots: IndexMap<String, IndexSet<String>>,
 }
 
 impl Deref for IndexedMemoryGraph {
@@ -800,15 +805,15 @@ impl DerefMut for IndexedMemoryGraph {
 
 impl From<MemoryGraph> for IndexedMemoryGraph {
     fn from(graph: MemoryGraph) -> Self {
-        let mut parent_children: IndexMap<String, Vec<String>> = IndexMap::new();
-        let mut child_parents: IndexMap<String, Vec<String>> = IndexMap::new();
-        let mut roots: IndexMap<String, Vec<String>> = OWL_TYPES
+        let mut parent_children: IndexMap<String, IndexSet<String>> = IndexMap::new();
+        let mut child_parents: IndexMap<String, IndexSet<String>> = IndexMap::new();
+        let mut roots: IndexMap<String, IndexSet<String>> = OWL_TYPES
             .iter()
-            .map(|s| (s.to_string(), Vec::new()))
+            .map(|s| (s.to_string(), IndexSet::new()))
             .collect();
-        let mut name_subjects: IndexMap<String, Vec<String>> = IndexMap::new();
+        let mut name_subjects: IndexMap<String, IndexSet<String>> = IndexMap::new();
         for subject in graph.subjects() {
-            let s = subject.id().object();
+            let s = &subject.name;
 
             // TODO: do a better job with synonyms
             for ann in [
@@ -821,14 +826,15 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
             ] {
                 let os = subject.get(ann);
                 for o in os {
-                    if o.datatype() == "_ID" {
-                        continue;
-                    }
-                    let o = o.object();
-                    match name_subjects.get_mut(&o) {
-                        Some(values) => values.push(s.to_string()),
-                        None => {
-                            name_subjects.insert(o.to_string(), vec![s.to_string()]);
+                    if let Some(o) = o.as_id() {
+                        match name_subjects.get_mut(o) {
+                            Some(values) => {
+                                values.insert(s.to_string());
+                            }
+                            None => {
+                                name_subjects
+                                    .insert(o.to_string(), IndexSet::from([s.to_string()]));
+                            }
                         }
                     }
                 }
@@ -844,20 +850,24 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
                     // Index subclass relations.
                     for o in os {
                         has_super = true;
-                        if o.datatype() != "_ID" {
-                            continue;
-                        }
-                        let o = o.object();
-                        match parent_children.get_mut(&o) {
-                            Some(values) => values.push(s.to_string()),
-                            None => {
-                                parent_children.insert(o.to_string(), vec![s.to_string()]);
+                        if let Some(o) = o.as_id() {
+                            match parent_children.get_mut(o) {
+                                Some(values) => {
+                                    values.insert(s.to_string());
+                                }
+                                None => {
+                                    parent_children
+                                        .insert(o.to_string(), IndexSet::from([s.to_string()]));
+                                }
                             }
-                        }
-                        match child_parents.get_mut(&s) {
-                            Some(values) => values.push(o.to_string()),
-                            None => {
-                                child_parents.insert(s.to_string(), vec![o.to_string()]);
+                            match child_parents.get_mut(s) {
+                                Some(values) => {
+                                    values.insert(o.to_string());
+                                }
+                                None => {
+                                    child_parents
+                                        .insert(s.to_string(), IndexSet::from([o.to_string()]));
+                                }
                             }
                         }
                     }
@@ -868,9 +878,9 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
             // If there are no super classes/properties, then this is a root.
             if owl_type.is_some() && !has_super {
                 roots
-                    .get_mut(owl_type.unwrap())
+                    .get_mut(&owl_type.unwrap().to_string())
                     .unwrap()
-                    .push(s.to_string());
+                    .insert(s.to_string());
             }
         }
 
@@ -879,7 +889,7 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
 
         // roots for each OWL type
         Self {
-            id: graph.id(),
+            id: graph.id().clone(),
             graph,
             parent_children,
             child_parents,
@@ -901,30 +911,30 @@ impl IndexedMemoryGraph {
             .collect()
     }
 
-    pub fn roots(&self, owl_type: &str) -> Vec<String> {
-        match self.roots.get(owl_type) {
+    pub fn roots(&self, owl_type: &str) -> IndexSet<String> {
+        match self.roots.get(&owl_type.to_string()) {
             Some(parents) => parents.clone(),
-            None => Vec::new(),
+            None => IndexSet::new(),
         }
     }
 
-    pub fn parents(&self, id: &str) -> Vec<String> {
-        match self.child_parents.get(id) {
+    pub fn parents(&self, id: &str) -> IndexSet<String> {
+        match self.child_parents.get(&id.to_string()) {
             Some(parents) => parents.clone(),
-            None => Vec::new(),
+            None => IndexSet::new(),
         }
     }
 
-    pub fn children(&self, id: &str) -> Vec<String> {
-        match self.parent_children.get(id) {
+    pub fn children(&self, id: &str) -> IndexSet<String> {
+        match self.parent_children.get(&id.to_string()) {
             Some(children) => children.clone(),
-            None => Vec::new(),
+            None => IndexSet::new(),
         }
     }
 
-    pub fn ancestors(&self, id: &str) -> Vec<String> {
+    pub fn ancestors(&self, id: &str) -> IndexSet<String> {
         // TODO: restrictions
-        let mut results = Vec::new();
+        let mut results = IndexSet::new();
         let mut r = 0;
         while r < 100 {
             r += 1;
@@ -933,7 +943,7 @@ impl IndexedMemoryGraph {
             for parent in parents {
                 if !results.contains(&parent) {
                     results.extend(self.ancestors(&parent));
-                    results.push(parent.clone());
+                    results.insert(parent);
                     added = true;
                 }
             }
