@@ -1,8 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Deref, DerefMut};
 
-use indexmap::IndexMap;
-use itertools::Itertools;
+use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -71,8 +69,37 @@ pub enum Object {
         #[serde(rename = "@annotations", skip_serializing_if = "Vec::is_empty")]
         annotations: Annotations,
     },
-    Map(BTreeMap<String, Objects>),
+    Map(IndexMap<String, Objects>),
     // TODO: RDF set ?
+}
+
+// When comparing Objects, ignore annotations.
+impl std::hash::Hash for Object {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            Object::ID { id, .. } => {
+                id.hash(state);
+            }
+            Object::LanguageLiteral {
+                value, language, ..
+            } => {
+                value.hash(state);
+                language.hash(state);
+            }
+            Object::TypedLiteral {
+                value, datatype, ..
+            } => {
+                value.hash(state);
+                datatype.hash(state);
+            }
+            Object::List { list, .. } => {
+                list.hash(state);
+            }
+            Object::Map(_) => {
+                // WARN: It's probably a bad idea not to update the hash state here.
+            }
+        }
+    }
 }
 
 impl Object {
@@ -131,7 +158,7 @@ impl Object {
             annotations: vec![],
         }
     }
-    pub fn map(map: &BTreeMap<String, Objects>) -> Self {
+    pub fn map(map: &IndexMap<String, Objects>) -> Self {
         Self::Map(map.clone())
     }
     pub fn new_list() -> Self {
@@ -141,7 +168,7 @@ impl Object {
         }
     }
     pub fn new_map() -> Self {
-        Self::Map(BTreeMap::new())
+        Self::Map(IndexMap::new())
     }
 
     // Return the datatype for this object.
@@ -200,14 +227,14 @@ impl Object {
 
     // Return a set of all IRIs used in this object, recursively.
     // TODO: Only IRIs not blank nodes?
-    pub fn signature(&self) -> BTreeSet<String> {
+    pub fn signature(&self) -> IndexSet<String> {
         match self {
-            Object::ID { id, .. } => BTreeSet::from([id.to_string()]),
-            Object::LanguageLiteral { .. } => BTreeSet::new(),
-            Object::TypedLiteral { datatype, .. } => BTreeSet::from([datatype.to_string()]),
+            Object::ID { id, .. } => IndexSet::from([id.to_string()]),
+            Object::LanguageLiteral { .. } => IndexSet::new(),
+            Object::TypedLiteral { datatype, .. } => IndexSet::from([datatype.to_string()]),
             Object::List { list, .. } => list.iter().map(|o| o.signature()).flatten().collect(),
             Object::Map(map) => {
-                let mut set = BTreeSet::new();
+                let mut set = IndexSet::new();
                 for (predicate, objects) in map {
                     set.insert(predicate.to_string());
                     for object in objects {
@@ -244,7 +271,14 @@ pub type Objects = Vec<Object>;
 pub struct Subject {
     // TODO: handle blank nodes
     name: String,
-    pairs: Vec<(String, Object)>,
+    pairs: IndexSet<(String, Object)>,
+}
+
+// Ignore pairs when hashing a Subject.
+impl std::hash::Hash for Subject {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
 }
 
 impl Subject {
@@ -294,7 +328,7 @@ impl Subject {
     }
 
     // Get the RDF types for this subject as a set of strings
-    pub fn types(&self) -> BTreeSet<&str> {
+    pub fn types(&self) -> IndexSet<&str> {
         self.pairs
             .iter()
             .filter_map(|(p, o)| match (p.as_str(), &o) {
@@ -323,7 +357,7 @@ impl Subject {
         return None;
     }
 
-    pub fn owl_types(&self) -> BTreeSet<&str> {
+    pub fn owl_types(&self) -> IndexSet<&str> {
         self.types()
             .into_iter()
             .filter(|x| OWL_TYPES.contains(x) || *x == DESCRIPTION)
@@ -340,10 +374,11 @@ impl Subject {
     }
 
     pub fn deprecated(&self) -> bool {
-        self.get(DEPRECATED)
+        self.pairs
             .iter()
-            .filter(|o| o.datatype() == BOOLEAN)
-            .filter(|o| o.object() == "true")
+            .filter(|(p, _)| p == DEPRECATED)
+            .filter(|(_, o)| o.datatype() == BOOLEAN)
+            .filter(|(_, o)| o.object() == "true")
             .nth(0)
             .is_some()
     }
@@ -370,18 +405,18 @@ impl Subject {
         }
     }
 
-    // TODO: match sighature of BTreeMap::insert() ?
+    // TODO: match sighature of IndexMap::insert() ?
     pub fn insert(&mut self, predicate: &str, object: &Object) -> bool {
         if self.contains(predicate, &object) {
             return false;
         }
-        self.pairs.push((predicate.to_string(), object.clone()));
+        self.pairs.insert((predicate.to_string(), object.clone()));
         true
     }
 
     // TODO: eliminate this
-    pub fn predicates(&self) -> BTreeMap<String, Objects> {
-        let mut predicates = BTreeMap::new();
+    pub fn predicates(&self) -> IndexMap<String, Objects> {
+        let mut predicates = IndexMap::new();
         for (p, o) in &self.pairs {
             if !predicates.contains_key(p) {
                 predicates.insert(p.clone(), Vec::new());
@@ -391,7 +426,7 @@ impl Subject {
         predicates
     }
 
-    pub fn get(&self, predicate: &str) -> Vec<&Object> {
+    pub fn get(&self, predicate: &str) -> IndexSet<&Object> {
         self.pairs
             .iter()
             .filter(|(p, _)| p == predicate)
@@ -458,8 +493,8 @@ impl Subject {
 
     // Return a set of all IRIs used in all the pairs of this Subject,
     // and its own IRI (if not empty).
-    pub fn signature(&self) -> BTreeSet<String> {
-        let mut set = BTreeSet::new();
+    pub fn signature(&self) -> IndexSet<String> {
+        let mut set = IndexSet::new();
         if self.name != "" {
             set.insert(self.name.to_string());
         }
@@ -470,7 +505,7 @@ impl Subject {
         set
     }
 
-    pub fn triples(&self) -> Vec<(String, String, Object)> {
+    pub fn triples(&self) -> IndexSet<(String, String, Object)> {
         self.pairs
             .iter()
             .map(|(p, o)| (self.name.to_string(), p.to_string(), o.clone()))
@@ -480,7 +515,7 @@ impl Subject {
 
 impl Into<Value> for Subject {
     fn into(self) -> Value {
-        let mut map: BTreeMap<String, Value> = BTreeMap::new();
+        let mut map: IndexMap<String, Value> = IndexMap::new();
         map.insert(String::from("@id"), self.name.clone().into());
         let types = self.types();
         if !types.is_empty() {
@@ -507,21 +542,21 @@ pub trait Graph {
     fn from_id(id: &str) -> Self;
     fn id(&self) -> String;
     fn set_id(&mut self, id: &str);
-    // fn annotations(&self, id: &str) -> BTreeMap<Subject, Objects>;
-    fn signature(&self) -> BTreeSet<String>;
-    fn extend(&mut self, subjects: Vec<Subject>) -> bool;
+    // fn annotations(&self, id: &str) -> IndexMap<Subject, Objects>;
+    fn signature(&self) -> IndexSet<String>;
+    fn extend(&mut self, subjects: impl IntoIterator<Item = Subject>) -> bool;
     // fn parents(&self, id: &str, restrictions: &Vec<String>) -> Vec<Subject>;
-    fn parents(&self, id: &str) -> Vec<Subject>;
-    fn individuals(&self, rdf_type: &str) -> Vec<Subject>;
-    fn children(&self, id: &str) -> Vec<Subject>;
+    fn parents(&self, id: &str) -> IndexSet<String>;
+    fn individuals(&self, rdf_type: &str) -> IndexSet<String>;
+    fn children(&self, id: &str) -> IndexSet<String>;
     // fn ancestors(&self, id: &str, restrictions: &Vec<String>) -> Vec<Subject>;
-    fn ancestors(&self, id: &str) -> Vec<Subject>;
+    fn ancestors(&self, id: &str) -> IndexSet<String>;
     fn extract(&self, id: &str, predicates: &Vec<&str>) -> Option<Subject>;
     fn insert(&mut self, subject: &Subject) -> bool;
-    fn subjects(&self) -> Vec<&Subject>;
+    fn subjects(&self) -> IndexSet<&Subject>;
     fn get(&self, id: &str) -> Option<Subject>;
-    fn subject_graph(&self, id: &str) -> Option<MemoryGraph>;
-    fn triples(&self) -> Vec<(String, String, Object)>;
+    // fn subject_graph(&self, id: &str) -> Option<MemoryGraph>;
+    fn triples(&self) -> IndexSet<(String, String, Object)>;
     // types
     // labels
 }
@@ -530,7 +565,7 @@ pub trait Graph {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemoryGraph {
     id: String,
-    subjects: BTreeMap<String, Subject>,
+    subjects: IndexMap<String, Subject>,
 }
 
 impl Graph for MemoryGraph {
@@ -555,8 +590,8 @@ impl Graph for MemoryGraph {
         self.id = id.to_string()
     }
 
-    fn subjects(&self) -> Vec<&Subject> {
-        self.subjects.values().collect_vec()
+    fn subjects(&self) -> IndexSet<&Subject> {
+        self.subjects.values().collect()
     }
 
     // Return the matching subject, if it exists.
@@ -568,8 +603,8 @@ impl Graph for MemoryGraph {
         self.subjects.get_mut(id)
     }
 
-    fn signature(&self) -> BTreeSet<String> {
-        let mut signature = BTreeSet::new();
+    fn signature(&self) -> IndexSet<String> {
+        let mut signature = IndexSet::new();
         for subject in self.subjects() {
             signature.extend(subject.signature());
         }
@@ -598,9 +633,13 @@ impl Graph for MemoryGraph {
                     copy.insert(&p, &o.clone());
                 }
                 if let Some(s) = self.get_mut(&source.object()) {
-                    for (p, o) in s.pairs.iter_mut() {
-                        if *p == property.object() && o == *target {
-                            o.annotate(&copy);
+                    for (p, o) in s.pairs.clone() {
+                        if *p == property.object() && o == **target {
+                            let mut o2 = o.clone();
+                            o2.annotate(&copy);
+                            let i = s.pairs.get_index_of(&(p.to_string(), o)).unwrap();
+                            s.pairs.replace_index(i, (p.to_string(), o2)).unwrap();
+                            break;
                         }
                     }
                 }
@@ -610,7 +649,7 @@ impl Graph for MemoryGraph {
         true
     }
 
-    fn extend(&mut self, subjects: Vec<Subject>) -> bool {
+    fn extend(&mut self, subjects: impl IntoIterator<Item = Subject>) -> bool {
         for subject in subjects {
             self.insert(&subject);
         }
@@ -622,30 +661,25 @@ impl Graph for MemoryGraph {
         self.get(id).and_then(|s| Some(s.extract(predicates)))
     }
 
-    fn parents(&self, id: &str) -> Vec<Subject> {
-        // TODO: restrictions
-        let predicates = vec![TYPE, LABEL, SUBCLASSOF];
+    fn parents(&self, id: &str) -> IndexSet<String> {
         let subject = match self.get(id) {
             Some(subject) => subject,
-            None => return Vec::new(),
+            None => return IndexSet::new(),
         };
-        let superclasses: Vec<String> = subject
-            .get(SUBCLASSOF)
+        subject
+            .pairs
             .iter()
-            .filter_map(|o| match o {
+            .filter(|(p, _)| p == SUBCLASSOF)
+            .filter_map(|(_, o)| match o {
                 Object::ID { id, .. } => Some(id.clone()),
                 _ => None,
             })
-            .collect();
-        superclasses
-            .iter()
-            .filter_map(|s| self.extract(s, &predicates))
             .collect()
     }
 
-    fn ancestors(&self, id: &str) -> Vec<Subject> {
+    fn ancestors(&self, id: &str) -> IndexSet<String> {
         // TODO: restrictions
-        let mut results = Vec::new();
+        let mut results = IndexSet::new();
         let mut r = 0;
         while r < 100 {
             r += 1;
@@ -653,8 +687,8 @@ impl Graph for MemoryGraph {
             let mut added = false;
             for parent in parents {
                 if !results.contains(&parent) {
-                    results.extend(self.ancestors(&parent.name()));
-                    results.push(parent.clone());
+                    results.extend(self.ancestors(&parent));
+                    results.insert(parent);
                     added = true;
                 }
             }
@@ -666,54 +700,52 @@ impl Graph for MemoryGraph {
     }
 
     // WARN: This is relatively slow.
-    fn children(&self, id: &str) -> Vec<Subject> {
-        let predicates = vec![TYPE, LABEL];
+    fn children(&self, id: &str) -> IndexSet<String> {
         self.subjects()
             .iter()
             .filter(|s| s.contains(SUBCLASSOF, &Object::id(id)))
-            .map(|s| s.extract(&predicates))
+            .map(|s| s.id().object())
             .collect()
     }
 
     // All subjects in the graph that have this subject
     // as on of their rdf:types.
-    fn individuals(&self, rdf_type: &str) -> Vec<Subject> {
-        let predicates = vec![TYPE, LABEL];
+    fn individuals(&self, rdf_type: &str) -> IndexSet<String> {
         self.subjects()
             .iter()
             .filter(|s| s.has_type(rdf_type))
-            .map(|s| s.extract(&predicates))
+            .map(|s| s.id().object())
             .collect()
     }
 
     // Given a subject ID,
     // return all its predicates, ancestors, and children,
     // and all the types and primary labels for all of them
-    fn subject_graph(&self, id: &str) -> Option<MemoryGraph> {
-        let subject = match self.get(id) {
-            Some(subject) => subject,
-            None => return None,
-        };
-        let mut graph = Self::from_id(id);
-        graph.insert(&subject);
-        graph.extend(self.ancestors(&subject.id().object()));
-        graph.extend(self.children(&subject.id().object()));
-        graph.extend(self.individuals(&subject.id().object()));
+    // fn subject_graph(&self, id: &str) -> Option<MemoryGraph> {
+    //     let subject = match self.get(id) {
+    //         Some(subject) => subject,
+    //         None => return None,
+    //     };
+    //     let mut graph = Self::from_id(id);
+    //     graph.insert(&subject);
+    //     graph.extend(self.ancestors(id));
+    //     graph.extend(self.children(id));
+    //     graph.extend(self.individuals(id));
 
-        let predicates = vec![TYPE, LABEL];
-        let signature = graph.signature();
-        for id in signature {
-            if graph.get(&id).is_some() {
-                continue;
-            }
-            if let Some(s) = self.get(&id) {
-                graph.insert(&s.extract(&predicates));
-            }
-        }
-        Some(graph)
-    }
+    //     let predicates = vec![TYPE, LABEL];
+    //     let signature = graph.signature();
+    //     for id in signature {
+    //         if graph.get(&id).is_some() {
+    //             continue;
+    //         }
+    //         if let Some(s) = self.get(&id) {
+    //             graph.insert(&s.extract(&predicates));
+    //         }
+    //     }
+    //     Some(graph)
+    // }
 
-    fn triples(&self) -> Vec<(String, String, Object)> {
+    fn triples(&self) -> IndexSet<(String, String, Object)> {
         self.subjects()
             .iter()
             .map(|s| s.triples())
@@ -724,7 +756,7 @@ impl Graph for MemoryGraph {
 
 impl Into<Value> for MemoryGraph {
     fn into(self) -> Value {
-        let mut map: BTreeMap<String, Value> = BTreeMap::new();
+        let mut map: IndexMap<String, Value> = IndexMap::new();
         map.insert(String::from("@id"), self.id().into());
         map.insert(
             String::from("@graph"),
