@@ -206,29 +206,25 @@ impl Object {
         }
     }
 
+    pub fn annotations(&self) -> Annotations {
+        let annotations = match self {
+            Self::ID { annotations, .. } => annotations,
+            Self::LanguageLiteral { annotations, .. } => annotations,
+            Self::TypedLiteral { annotations, .. } => annotations,
+            Self::List { annotations, .. } => annotations,
+            Self::Map(_) => &Vec::new(),
+        };
+        annotations.to_vec()
+    }
+
     // Return the string that goes into the "object" field of a Statement.
     // This is either empty or a JSON object.
     pub fn annotation(&self) -> String {
-        let annotation = match self {
-            Self::ID {
-                annotations: annotation,
-                ..
-            } => annotation,
-            Self::LanguageLiteral {
-                annotations: annotation,
-                ..
-            } => annotation,
-            Self::TypedLiteral {
-                annotations: annotation,
-                ..
-            } => annotation,
-            Self::List { .. } => &Vec::new(),
-            Self::Map(_) => &Vec::new(),
-        };
-        if annotation.is_empty() {
+        let annotations = self.annotations();
+        if annotations.is_empty() {
             String::new()
         } else {
-            json!(annotation).to_string()
+            json!(annotations).to_string()
         }
     }
 
