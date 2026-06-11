@@ -69,7 +69,12 @@ pub enum Object {
         #[serde(rename = "@annotations", skip_serializing_if = "Vec::is_empty")]
         annotations: Annotations,
     },
-    Map(IndexMap<String, Objects>),
+    Map {
+        #[serde(flatten)]
+        content: IndexMap<String, Objects>,
+        #[serde(rename = "@annotations", skip_serializing_if = "Vec::is_empty")]
+        annotations: Annotations,
+    },
     // TODO: RDF set ?
 }
 
@@ -95,7 +100,7 @@ impl std::hash::Hash for Object {
             Object::List { list, .. } => {
                 list.hash(state);
             }
-            Object::Map(_) => {
+            Object::Map { .. } => {
                 // WARN: It's probably a bad idea not to update the hash state here.
             }
         }
@@ -159,7 +164,10 @@ impl Object {
         }
     }
     pub fn map(map: &IndexMap<String, Objects>) -> Self {
-        Self::Map(map.clone())
+        Self::Map {
+            content: map.clone(),
+            annotations: vec![],
+        }
     }
     pub fn new_list() -> Self {
         Self::List {
@@ -168,7 +176,10 @@ impl Object {
         }
     }
     pub fn new_map() -> Self {
-        Self::Map(IndexMap::new())
+        Self::Map {
+            content: IndexMap::new(),
+            annotations: vec![],
+        }
     }
 
     // Return the datatype for this object.
@@ -181,7 +192,7 @@ impl Object {
             Self::LanguageLiteral { language, .. } => format!("@{language}"),
             Self::TypedLiteral { datatype, .. } => datatype.clone(),
             Self::List { .. } => String::from("_JSONLD"),
-            Self::Map(_) => String::from("_JSONLD"),
+            Self::Map { .. } => String::from("_JSONLD"),
         }
     }
 
@@ -202,19 +213,18 @@ impl Object {
             Self::LanguageLiteral { value, .. } => value.clone(),
             Self::TypedLiteral { value, .. } => value.clone(),
             Self::List { .. } => json!(self).to_string(),
-            Self::Map(_) => json!(self).to_string(),
+            Self::Map { content, .. } => json!(content).to_string(),
         }
     }
 
-    pub fn annotations(&self) -> Annotations {
-        let annotations = match self {
+    pub fn annotations(&self) -> &Annotations {
+        match self {
             Self::ID { annotations, .. } => annotations,
             Self::LanguageLiteral { annotations, .. } => annotations,
             Self::TypedLiteral { annotations, .. } => annotations,
             Self::List { annotations, .. } => annotations,
-            Self::Map(_) => &Vec::new(),
-        };
-        annotations.to_vec()
+            Self::Map { annotations, .. } => annotations,
+        }
     }
 
     // Return the string that goes into the "object" field of a Statement.
@@ -231,34 +241,47 @@ impl Object {
     // Return a set of all IRIs used in this object, recursively.
     // TODO: Only IRIs not blank nodes?
     pub fn signature(&self) -> IndexSet<&String> {
-        match self {
-            Object::ID { id, .. } => IndexSet::from([id]),
-            Object::LanguageLiteral { .. } => IndexSet::new(),
-            Object::TypedLiteral { datatype, .. } => IndexSet::from([datatype]),
-            Object::List { list, .. } => list.iter().map(|o| o.signature()).flatten().collect(),
-            Object::Map(map) => {
+        let (mut core, annotations) = match self {
+            Object::ID { id, annotations } => (IndexSet::from([id]), annotations),
+            Object::LanguageLiteral { annotations, .. } => (IndexSet::new(), annotations),
+            Object::TypedLiteral {
+                datatype,
+                annotations,
+                ..
+            } => (IndexSet::from([datatype]), annotations),
+            Object::List { list, annotations } => (
+                list.iter().map(|o| o.signature()).flatten().collect(),
+                annotations,
+            ),
+            Object::Map {
+                content,
+                annotations,
+            } => {
                 let mut set = IndexSet::new();
-                for (predicate, objects) in map {
+                for (predicate, objects) in content {
                     set.insert(predicate);
                     for object in objects {
                         set.extend(object.signature());
                     }
                 }
-                set
+                (set, annotations)
+            }
+        };
+        for annotations in annotations.into_iter() {
+            for (p, os) in annotations.into_iter() {
+                core.insert(p);
+                core.extend(os.into_iter().flat_map(|o| o.signature()));
             }
         }
+        core
     }
 
     pub fn annotate(&mut self, subject: &Subject) {
-        let mut map = IndexMap::new();
-        for (predicate, objects) in subject.predicates() {
-            map.insert(predicate, objects);
-        }
-        let map = vec![map];
+        let list = vec![subject.predicates()];
         match self {
-            Self::ID { annotations, .. } => *annotations = map,
-            Self::LanguageLiteral { annotations, .. } => *annotations = map,
-            Self::TypedLiteral { annotations, .. } => *annotations = map,
+            Self::ID { annotations, .. } => *annotations = list,
+            Self::LanguageLiteral { annotations, .. } => *annotations = list,
+            Self::TypedLiteral { annotations, .. } => *annotations = list,
             _ => (),
         };
     }

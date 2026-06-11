@@ -70,15 +70,18 @@ impl Prefixes {
         }
     }
 
-    /// Expand a CURIE to an IRI, if possible.
+    /// Expand a CURIE to an IRI, or just return it.
     pub fn expand(&self, curie: &str) -> String {
-        for (prefix, base) in self.indexmap.iter() {
-            let p = format!("{prefix}:");
-            if curie.starts_with(&p) {
-                return curie.to_string().replace(&p, base);
+        match curie.split_once(":") {
+            Some((prefix, local_name)) => {
+                if let Some(base) = self.indexmap.get(prefix) {
+                    format!("{base}{local_name}")
+                } else {
+                    curie.to_string()
+                }
             }
+            None => curie.to_string(),
         }
-        curie.to_string()
     }
 
     /// Compact an IRI to a CURIE, if possible.

@@ -5,17 +5,15 @@ use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::QName;
 use quick_xml::reader::Reader;
-use std::collections::BTreeMap;
 
 use crate::model::{Graph, MemoryGraph, Object, Objects, Subject};
+use crate::prefix::Prefixes;
 
 const DEBUG: bool = false;
 
-pub type Prefixes = BTreeMap<String, String>;
-
 // Read prefixes from an attribute_raw() string
 fn read_prefixes(content: &str) -> Result<Prefixes, XMLError> {
-    let mut prefixes = BTreeMap::new();
+    let mut prefixes = Prefixes::new();
     let name = "root";
     let elem = BytesStart::from_content(format!("{name}{content}"), name.len());
     for attr in elem.attributes() {
@@ -27,7 +25,7 @@ fn read_prefixes(content: &str) -> Result<Prefixes, XMLError> {
                             .expect("Valid local name");
                         let iri = String::from_utf8(attr.value.into_owned())
                             .expect("Valid attribute value");
-                        prefixes.insert(prefix, iri);
+                        prefixes.insert(&prefix, &iri);
                     }
                 }
                 None => continue,
@@ -36,19 +34,6 @@ fn read_prefixes(content: &str) -> Result<Prefixes, XMLError> {
         }
     }
     Ok(prefixes)
-}
-
-fn expand(prefixes: &Prefixes, curie: &str) -> String {
-    match curie.split_once(":") {
-        Some((prefix, local_name)) => {
-            if prefixes.contains_key(prefix) {
-                format!("{}{local_name}", prefixes.get(prefix).unwrap())
-            } else {
-                curie.to_string()
-            }
-        }
-        None => curie.to_string(),
-    }
 }
 
 // Read the
@@ -95,7 +80,7 @@ pub fn read(input: &str) -> Result<MemoryGraph, XMLError> {
     let prefixes = read_prefixes(&value)?;
 
     // Store prefixes
-    let name = expand(&prefixes, name);
+    let name = prefixes.expand(name);
     let mut doc = Subject::from_name(&name);
     doc.insert(
         "http://example.com/rdf_declarations",
@@ -133,7 +118,7 @@ pub fn read(input: &str) -> Result<MemoryGraph, XMLError> {
                 if DEBUG {
                     println!(r#"    <{qname} rdf:about="{iri}"/>"#);
                 }
-                let rdf_type = &expand(&prefixes, &qname);
+                let rdf_type = &prefixes.expand(&qname);
                 let mut subject = Subject::from_name(&iri);
                 subject.insert_type(rdf_type);
                 if subject.has_type("http://www.w3.org/2002/07/owl#Ontology") {
@@ -166,7 +151,7 @@ fn read_subject(
     depth: usize,
 ) -> Result<Subject, XMLError> {
     let qname = read_qname(start.name());
-    let rdf_type = expand(&prefixes, &qname);
+    let rdf_type = prefixes.expand(&qname);
     let mut subject = Subject::from_type(&rdf_type);
 
     // The rdf:about attribute holds the Subject's id,
@@ -194,7 +179,7 @@ fn read_subject(
             Event::Start(event) => {
                 // could be: lang literal, typed literal, plain literal, collection of objects, or a single anonymous nested subject
                 let qname = read_qname(event.name());
-                let predicate = expand(&prefixes, &qname);
+                let predicate = prefixes.expand(&qname);
                 let object = read_object(reader, &prefixes, &event, depth + 1)?;
                 subject.insert(&predicate, &object);
             }
@@ -202,7 +187,7 @@ fn read_subject(
                 // must be an IRI in an rdf:resource
                 // or a blank node with an rdf:nodeID
                 let qname = read_qname(event.name());
-                let predicate = expand(&prefixes, &qname);
+                let predicate = prefixes.expand(&qname);
                 match event.try_get_attribute("rdf:resource")? {
                     Some(a) => {
                         let iri: String = read_attr(a);
@@ -268,7 +253,7 @@ fn read_object(
     depth: usize,
 ) -> Result<Object, XMLError> {
     let qname = read_qname(start.name());
-    let predicate = expand(&prefixes, &qname);
+    let predicate = prefixes.expand(&qname);
 
     // LanguageLiteral
     if let Some(a) = start.try_get_attribute("xml:lang")? {
@@ -322,7 +307,7 @@ fn read_object(
                 if DEBUG {
                     println!("{}</{qname}>", "    ".repeat(depth));
                 }
-                return Ok(Object::Map(subject2.predicates()));
+                return Ok(Object::map(&subject2.predicates()));
             }
             // PLAIN literal
             Event::Text(event) => {
@@ -373,7 +358,7 @@ fn read_objects(
             // an rdf:type for an anonymous nested subject
             Event::Start(start) => {
                 let subject = read_subject(reader, &prefixes, &start, depth + 1)?;
-                objects.push(Object::Map(subject.predicates()));
+                objects.push(Object::map(&subject.predicates()));
             }
             // an rdf:Description element
             Event::Empty(event) => {
