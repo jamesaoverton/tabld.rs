@@ -884,7 +884,7 @@ impl IndexedMemoryGraph {
         let text = text.to_lowercase();
         self.name_subjects
             .iter()
-            .inspect(|(k, v)| println!("{k} {v:?}"))
+            // .inspect(|(k, v)| println!("{k} {v:?}"))
             .filter(|(k, _)| k.to_lowercase().contains(&text))
             .flat_map(|(k, vs)| vs.iter().map(|v| (k.to_string(), v.to_string())))
             .take(limit)
