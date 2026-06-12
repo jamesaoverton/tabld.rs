@@ -1,8 +1,11 @@
-use std::ops::{Deref, DerefMut};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::{Deref, DerefMut},
+};
 
 use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 pub const TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 pub const PLAIN: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral";
@@ -35,10 +38,12 @@ pub const OWL_TYPES: [&str; 6] = [
 // TODO: Make this a proper error.
 pub type Error = String;
 type JSONError = serde_json::Error;
-type Annotations = Vec<IndexMap<String, Vec<Object>>>;
+
+type Predicates = BTreeMap<String, Objects>;
+type Annotations = Vec<Predicates>;
 
 // JSON-LD with serde_json
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
 #[serde(untagged)]
 pub enum Object {
     ID {
@@ -71,7 +76,7 @@ pub enum Object {
     },
     Map {
         #[serde(flatten)]
-        content: IndexMap<String, Objects>,
+        content: Predicates,
         #[serde(rename = "@annotations", skip_serializing_if = "Vec::is_empty")]
         annotations: Annotations,
     },
@@ -100,8 +105,9 @@ impl std::hash::Hash for Object {
             Object::List { list, .. } => {
                 list.hash(state);
             }
-            Object::Map { .. } => {
-                // WARN: It's probably a bad idea not to update the hash state here.
+            Object::Map { content, .. } => {
+                let map = BTreeMap::from_iter(content);
+                format!("{map:?}").hash(state);
             }
         }
     }
@@ -157,13 +163,13 @@ impl Object {
             annotations: vec![],
         }
     }
-    pub fn list(objects: &Objects) -> Self {
+    pub fn list(objects: Vec<Object>) -> Self {
         Self::List {
-            list: objects.clone(),
+            list: objects,
             annotations: vec![],
         }
     }
-    pub fn map(map: &IndexMap<String, Objects>) -> Self {
+    pub fn map(map: Predicates) -> Self {
         Self::Map {
             content: map.clone(),
             annotations: vec![],
@@ -177,7 +183,7 @@ impl Object {
     }
     pub fn new_map() -> Self {
         Self::Map {
-            content: IndexMap::new(),
+            content: BTreeMap::new(),
             annotations: vec![],
         }
     }
@@ -238,17 +244,28 @@ impl Object {
         }
     }
 
+    pub fn annotate(&mut self, predicates: Predicates) {
+        let annotatations = match self {
+            Self::ID { annotations, .. } => annotations,
+            Self::LanguageLiteral { annotations, .. } => annotations,
+            Self::TypedLiteral { annotations, .. } => annotations,
+            Self::List { annotations, .. } => annotations,
+            Self::Map { annotations, .. } => annotations,
+        };
+        annotatations.push(predicates)
+    }
+
     // Return a set of all IRIs used in this object, recursively.
     // TODO: Only IRIs not blank nodes?
-    pub fn signature(&self) -> IndexSet<&String> {
+    pub fn signature(&self) -> BTreeSet<&String> {
         let (mut core, annotations) = match self {
-            Object::ID { id, annotations } => (IndexSet::from([id]), annotations),
-            Object::LanguageLiteral { annotations, .. } => (IndexSet::new(), annotations),
+            Object::ID { id, annotations } => (BTreeSet::from([id]), annotations),
+            Object::LanguageLiteral { annotations, .. } => (BTreeSet::new(), annotations),
             Object::TypedLiteral {
                 datatype,
                 annotations,
                 ..
-            } => (IndexSet::from([datatype]), annotations),
+            } => (BTreeSet::from([datatype]), annotations),
             Object::List { list, annotations } => (
                 list.iter().map(|o| o.signature()).flatten().collect(),
                 annotations,
@@ -257,7 +274,7 @@ impl Object {
                 content,
                 annotations,
             } => {
-                let mut set = IndexSet::new();
+                let mut set = BTreeSet::new();
                 for (predicate, objects) in content {
                     set.insert(predicate);
                     for object in objects {
@@ -275,29 +292,19 @@ impl Object {
         }
         core
     }
-
-    pub fn annotate(&mut self, subject: &Subject) {
-        let list = vec![subject.predicates()];
-        match self {
-            Self::ID { annotations, .. } => *annotations = list,
-            Self::LanguageLiteral { annotations, .. } => *annotations = list,
-            Self::TypedLiteral { annotations, .. } => *annotations = list,
-            _ => (),
-        };
-    }
 }
 
-pub type Objects = Vec<Object>;
+pub type Objects = BTreeSet<Object>;
 
-// A Subject has an ID and a set of Pairs.
+// A Subject has an ID and a map from predicates to a set of objects.
 // It is the equivalent to a set of Triples with the same subject.
 // Semantically it's a set of Pairs,
 // but our implementation retains order.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialOrd, Ord, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Subject {
     // TODO: handle blank nodes
     name: String,
-    pairs: IndexSet<(String, Object)>,
+    map: Predicates,
 }
 
 // Ignore pairs when hashing a Subject.
@@ -341,27 +348,33 @@ impl Subject {
     }
 
     pub fn label(&self) -> String {
-        for (p, o) in &self.pairs {
-            if p == LABEL {
-                match o {
-                    Object::LanguageLiteral { value, .. } => return value.to_string(),
-                    Object::TypedLiteral { value, .. } => return value.to_string(),
-                    _ => (),
+        match self.map.get(LABEL) {
+            Some(objects) => {
+                for object in objects {
+                    match object {
+                        Object::LanguageLiteral { value, .. } => return value.to_string(),
+                        Object::TypedLiteral { value, .. } => return value.to_string(),
+                        _ => (),
+                    }
                 }
             }
+            None => (),
         }
         self.name.to_string()
     }
 
     // Get the RDF types for this subject as a set of strings
-    pub fn types(&self) -> IndexSet<&str> {
-        self.pairs
-            .iter()
-            .filter_map(|(p, o)| match (p.as_str(), &o) {
-                (TYPE, Object::ID { id, .. }) => Some(id.as_str()),
-                _ => None,
-            })
-            .collect()
+    pub fn types(&self) -> BTreeSet<&str> {
+        match self.map.get(TYPE) {
+            Some(types) => types
+                .iter()
+                .filter_map(|o| match o {
+                    Object::ID { id, .. } => Some(id.as_str()),
+                    _ => None,
+                })
+                .collect(),
+            None => BTreeSet::new(),
+        }
     }
 
     pub fn has_type(&self, rdf_type: &str) -> bool {
@@ -369,7 +382,7 @@ impl Subject {
     }
 
     pub fn insert_type(&mut self, rdf_type: &str) -> bool {
-        self.insert(TYPE, &Object::id(rdf_type))
+        self.insert(TYPE, Object::id(rdf_type))
     }
 
     // Get the first matching OWL type.
@@ -383,7 +396,7 @@ impl Subject {
         return None;
     }
 
-    pub fn owl_types(&self) -> IndexSet<&str> {
+    pub fn owl_types(&self) -> BTreeSet<&str> {
         self.types()
             .into_iter()
             .filter(|x| OWL_TYPES.contains(x) || *x == DESCRIPTION)
@@ -391,7 +404,7 @@ impl Subject {
     }
 
     pub fn has_predicate(&self, predicate: &str) -> bool {
-        for (p, _) in &self.pairs {
+        for (p, _) in &self.map {
             if p == predicate {
                 return true;
             }
@@ -400,64 +413,55 @@ impl Subject {
     }
 
     pub fn deprecated(&self) -> bool {
-        self.pairs
-            .iter()
-            .filter(|(p, _)| p == DEPRECATED)
-            .filter(|(_, o)| o.datatype() == BOOLEAN)
-            .filter(|(_, o)| o.object() == "true")
-            .nth(0)
-            .is_some()
+        match self.map.get(DEPRECATED) {
+            Some(objects) => objects
+                .iter()
+                .filter(|o| o.datatype() == BOOLEAN)
+                .filter(|o| o.object() == "true")
+                .nth(0)
+                .is_some(),
+            None => false,
+        }
     }
 
     pub fn contains(&self, predicate: &str, object: &Object) -> bool {
-        for (p, o) in &self.pairs {
-            if p == predicate && o == object {
-                return true;
-            }
-        }
-        false
+        self.map
+            .get(predicate)
+            .and_then(|objects| Some(objects.contains(object)))
+            .is_some()
     }
 
     // Maybe return a subject with just these predicates.
     pub fn extract(&self, predicates: &[&str]) -> Subject {
         Subject {
             name: self.name.clone(),
-            pairs: self
-                .pairs
-                .iter()
+            map: self
+                .map
+                .clone()
+                .into_iter()
                 .filter(|(p, _)| predicates.contains(&p.as_str()))
-                .cloned()
                 .collect(),
         }
     }
 
     // TODO: match sighature of IndexMap::insert() ?
-    pub fn insert(&mut self, predicate: &str, object: &Object) -> bool {
-        if self.contains(predicate, &object) {
-            return false;
-        }
-        self.pairs.insert((predicate.to_string(), object.clone()));
-        true
+    pub fn insert(&mut self, predicate: &str, object: Object) -> bool {
+        self.map
+            .entry(predicate.to_string())
+            .or_insert(BTreeSet::new())
+            .insert(object)
     }
 
-    // TODO: eliminate this
-    pub fn predicates(&self) -> IndexMap<String, Objects> {
-        let mut predicates = IndexMap::new();
-        for (p, o) in &self.pairs {
-            if !predicates.contains_key(p) {
-                predicates.insert(p.clone(), Vec::new());
-            }
-            predicates.get_mut(p).unwrap().push(o.clone());
-        }
-        predicates
+    pub fn predicates(&self) -> BTreeMap<String, Objects> {
+        self.map.clone()
     }
 
-    pub fn get(&self, predicate: &str) -> IndexSet<&Object> {
-        self.pairs
-            .iter()
-            .filter(|(p, _)| p == predicate)
-            .map(|(_, o)| o)
-            .collect()
+    pub fn get(&self, predicate: &str) -> Option<&BTreeSet<Object>> {
+        self.map.get(predicate)
+    }
+
+    pub fn get_mut(&mut self, predicate: &str) -> Option<&mut BTreeSet<Object>> {
+        self.map.get_mut(predicate)
     }
 
     // Get the first object matching a language tag,
@@ -475,11 +479,14 @@ impl Subject {
                 .to_lowercase()
         );
         loop {
+            let empty = BTreeSet::new();
             let mut values: Vec<&String> = self
-                .pairs
+                .map
+                .get(predicate)
+                .unwrap_or(&empty)
                 .iter()
-                .filter(|(p, o)| p == predicate && o.datatype().to_lowercase() == datatype)
-                .filter_map(|(_, o)| match o {
+                .filter(|o| o.datatype().to_lowercase() == datatype)
+                .filter_map(|o| match o {
                     Object::LanguageLiteral { value, .. } => Some(value),
                     _ => None,
                 })
@@ -519,26 +526,32 @@ impl Subject {
 
     // Return a set of all IRIs used in all the pairs of this Subject,
     // and its own IRI (if not empty).
-    pub fn signature(&self) -> IndexSet<&String> {
-        let mut set = IndexSet::new();
+    pub fn signature(&self) -> BTreeSet<&String> {
+        let mut set = BTreeSet::new();
         if self.name != "" {
             set.insert(&self.name);
         }
-        for (p, o) in &self.pairs {
+        for (p, os) in &self.map {
             set.insert(p);
-            set.extend(o.signature());
+            set.extend(os.iter().flat_map(|o| o.signature()));
         }
         set
     }
 
-    pub fn triples(&self) -> IndexSet<(&String, &String, &Object)> {
-        self.pairs.iter().map(|(p, o)| (&self.name, p, o)).collect()
+    pub fn triples(&self) -> BTreeSet<(String, String, Object)> {
+        self.map
+            .iter()
+            .flat_map(|(p, os)| {
+                os.iter()
+                    .map(|o| (self.name.to_string(), p.to_string(), o.clone()))
+            })
+            .collect()
     }
 }
 
 impl Into<Value> for Subject {
     fn into(self) -> Value {
-        let mut map: IndexMap<String, Value> = IndexMap::new();
+        let mut map: Map<String, Value> = Map::new();
         map.insert(String::from("@id"), self.name.clone().into());
         let types = self.types();
         if !types.is_empty() {
@@ -568,7 +581,7 @@ pub trait Graph {
 
     fn set_id(&mut self, id: &str);
 
-    fn subjects(&self) -> IndexSet<&Subject>;
+    fn subjects(&self) -> BTreeSet<&Subject>;
 
     fn insert(&mut self, subject: Subject) -> Option<Subject>;
 
@@ -583,29 +596,25 @@ pub trait Graph {
 
     fn get_mut(&mut self, id: &str) -> Option<&mut Subject>;
 
-    fn signature(&self) -> IndexSet<&String> {
+    fn signature(&self) -> BTreeSet<&String> {
         self.subjects().iter().flat_map(|s| s.signature()).collect()
     }
 
-    fn parents(&self, id: &str) -> IndexSet<&String> {
+    fn parents(&self, id: &str) -> BTreeSet<&String> {
         let subject = match self.get(id) {
             Some(subject) => subject,
-            None => return IndexSet::new(),
+            None => return BTreeSet::new(),
         };
-        subject
-            .pairs
-            .iter()
-            .filter(|(p, _)| p == SUBCLASSOF)
-            .filter_map(|(_, o)| match o {
-                Object::ID { id, .. } => Some(id),
-                _ => None,
-            })
-            .collect()
+        let supers = match subject.get(SUBCLASSOF) {
+            Some(supers) => supers,
+            None => return BTreeSet::new(),
+        };
+        supers.iter().filter_map(|o| o.as_id()).collect()
     }
 
-    fn ancestors(&self, id: &str) -> IndexSet<&String> {
+    fn ancestors(&self, id: &str) -> BTreeSet<&String> {
         // TODO: restrictions
-        let mut results = IndexSet::new();
+        let mut results = BTreeSet::new();
         let mut r = 0;
         while r < 100 {
             r += 1;
@@ -625,7 +634,7 @@ pub trait Graph {
         results
     }
 
-    fn children(&self, id: &str) -> IndexSet<&String> {
+    fn children(&self, id: &str) -> BTreeSet<&String> {
         self.subjects()
             .iter()
             .filter(|s| s.contains(SUBCLASSOF, &Object::id(id)))
@@ -633,28 +642,20 @@ pub trait Graph {
             .collect()
     }
 
-    fn individuals(&self, rdf_type: &str) -> IndexSet<&String> {
+    fn individuals(&self, rdf_type: &str) -> BTreeSet<&String> {
         let subject = match self.get(rdf_type) {
             Some(subject) => subject,
-            None => return IndexSet::new(),
+            None => return BTreeSet::new(),
         };
-        subject
-            .pairs
-            .iter()
-            .filter(|(p, _)| p == SUBCLASSOF)
-            .filter_map(|(_, o)| match o {
-                Object::ID { id, .. } => Some(id),
-                _ => None,
-            })
-            .collect()
+        let subjects = match subject.get(SUBCLASSOF) {
+            Some(subjects) => subjects,
+            None => return BTreeSet::new(),
+        };
+        subjects.iter().filter_map(|o| o.as_id()).collect()
     }
 
-    fn triples(&self) -> IndexSet<(&String, &String, &Object)> {
-        self.subjects()
-            .iter()
-            .map(|s| s.triples())
-            .flatten()
-            .collect()
+    fn triples(&self) -> BTreeSet<(String, String, Object)> {
+        self.subjects().iter().flat_map(|s| s.triples()).collect()
     }
 }
 
@@ -662,7 +663,7 @@ pub trait Graph {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemoryGraph {
     id: String,
-    subjects: IndexMap<String, Subject>,
+    subjects: BTreeMap<String, Subject>,
 }
 
 impl Graph for MemoryGraph {
@@ -687,7 +688,7 @@ impl Graph for MemoryGraph {
         self.id = id.to_string()
     }
 
-    fn subjects(&self) -> IndexSet<&Subject> {
+    fn subjects(&self) -> BTreeSet<&Subject> {
         self.subjects.values().collect()
     }
 
@@ -708,28 +709,26 @@ impl Graph for MemoryGraph {
         // mutate object: annotate with subject minus annotated*
         if subject.has_type(AXIOM) {
             if let (Some(source), Some(property), Some(target)) = (
-                subject.get(ANNOTATED_SOURCE).first().clone(),
-                subject.get(ANNOTATED_PROPERTY).first().clone(),
-                subject.get(ANNOTATED_TARGET).first().clone(),
+                subject
+                    .get(ANNOTATED_SOURCE)
+                    .and_then(|os| os.first())
+                    .and_then(|o| o.as_id()),
+                subject
+                    .get(ANNOTATED_PROPERTY)
+                    .and_then(|os| os.first())
+                    .and_then(|o| o.as_id()),
+                subject.get(ANNOTATED_TARGET).and_then(|os| os.first()),
             ) {
-                let mut copy = Subject::new();
-                for (p, o) in subject.pairs.iter() {
-                    if [ANNOTATED_SOURCE, ANNOTATED_PROPERTY, ANNOTATED_TARGET]
-                        .contains(&p.as_str())
-                    {
-                        continue;
-                    }
-                    copy.insert(&p, &o.clone());
-                }
-                if let Some(s) = self.get_mut(&source.object()) {
-                    for (p, o) in s.pairs.clone() {
-                        if p == *property.object() && o == **target {
-                            let mut o2 = o.clone();
-                            o2.annotate(&copy);
-                            let i = s.pairs.get_index_of(&(p.to_string(), o)).unwrap();
-                            s.pairs.replace_index(i, (p.to_string(), o2)).unwrap();
-                            break;
-                        }
+                let mut copy = subject.predicates();
+                copy.remove(ANNOTATED_SOURCE);
+                copy.remove(ANNOTATED_PROPERTY);
+                copy.remove(ANNOTATED_TARGET);
+                if let Some(s) = self.get_mut(&source) {
+                    if let Some(os) = s.get_mut(property) {
+                        let mut o2 = target.clone();
+                        o2.annotate(copy);
+                        os.remove(target);
+                        os.insert(o2);
                     }
                 }
             }
@@ -740,7 +739,7 @@ impl Graph for MemoryGraph {
 
 impl Into<Value> for MemoryGraph {
     fn into(self) -> Value {
-        let mut map: IndexMap<String, Value> = IndexMap::new();
+        let mut map: Map<String, Value> = Map::new();
         map.insert(String::from("@id"), self.id().into());
         map.insert(
             String::from("@graph"),
@@ -791,6 +790,7 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
             .map(|s| (s.to_string(), IndexSet::new()))
             .collect();
         let mut name_subjects: IndexMap<String, IndexSet<String>> = IndexMap::new();
+        let empty = BTreeSet::new();
         for subject in graph.subjects() {
             let s = &subject.name;
 
@@ -803,7 +803,7 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
                 "http://www.geneontology.org/formats/oboInOwl#hasNarrowSynonym",
                 "http://www.geneontology.org/formats/oboInOwl#hasBroadSynonym",
             ] {
-                let os = subject.get(ann);
+                let os = subject.get(ann).unwrap_or(&empty);
                 for o in os {
                     if o.datatype() != "_ID" {
                         let o = o.object();
@@ -825,7 +825,7 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
                 Some(CLASS) => {
                     // TODO: handle equivalent classes
                     // TODO: handle restrictions
-                    let os = subject.get(SUBCLASSOF);
+                    let os = subject.get(SUBCLASSOF).unwrap_or(&empty);
                     // Index subclass relations.
                     for o in os {
                         has_super = true;
@@ -918,7 +918,7 @@ impl Graph for IndexedMemoryGraph {
         self.id = id.to_string()
     }
 
-    fn subjects(&self) -> IndexSet<&Subject> {
+    fn subjects(&self) -> BTreeSet<&Subject> {
         self.graph.subjects()
     }
 
@@ -935,23 +935,23 @@ impl Graph for IndexedMemoryGraph {
         self.graph.insert(subject)
     }
 
-    fn parents(&self, id: &str) -> IndexSet<&String> {
+    fn parents(&self, id: &str) -> BTreeSet<&String> {
         match self.child_parents.get(&id.to_string()) {
-            Some(parents) => IndexSet::from_iter(parents),
-            None => IndexSet::new(),
+            Some(parents) => BTreeSet::from_iter(parents),
+            None => BTreeSet::new(),
         }
     }
 
-    fn children(&self, id: &str) -> IndexSet<&String> {
+    fn children(&self, id: &str) -> BTreeSet<&String> {
         match self.parent_children.get(&id.to_string()) {
-            Some(children) => IndexSet::from_iter(children),
-            None => IndexSet::new(),
+            Some(children) => BTreeSet::from_iter(children),
+            None => BTreeSet::new(),
         }
     }
 
-    fn ancestors(&self, id: &str) -> IndexSet<&String> {
+    fn ancestors(&self, id: &str) -> BTreeSet<&String> {
         // TODO: restrictions
-        let mut results = IndexSet::new();
+        let mut results = BTreeSet::new();
         let mut r = 0;
         while r < 100 {
             r += 1;
@@ -969,5 +969,62 @@ impl Graph for IndexedMemoryGraph {
             }
         }
         results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    #[test]
+    fn test_object_json() {
+        let object = Object::Map {
+            content: BTreeMap::from([("foo".to_string(), BTreeSet::from([Object::id("bar")]))]),
+            annotations: vec![],
+        };
+
+        assert_eq!(json!({"foo": [{"@id": "bar"}]}), json!(object));
+    }
+
+    #[test]
+    fn test_object_hash() {
+        let predicates1 = BTreeMap::from([
+            ("bar".to_string(), BTreeSet::from([Object::id("BAR")])),
+            ("foo".to_string(), BTreeSet::from([Object::id("FOO")])),
+        ]);
+        let predicates2 = BTreeMap::from([
+            ("foo".to_string(), BTreeSet::from([Object::id("FOO")])),
+            ("bar".to_string(), BTreeSet::from([Object::id("BAR")])),
+        ]);
+        let predicates3 =
+            BTreeMap::from([("foo".to_string(), BTreeSet::from([Object::id("FOO")]))]);
+        let object1 = Object::Map {
+            content: predicates1.clone(),
+            annotations: vec![],
+        };
+        let object2 = Object::Map {
+            content: predicates2.clone(),
+            annotations: vec![predicates2.clone()],
+        };
+        let object3 = Object::Map {
+            content: predicates3.clone(),
+            annotations: vec![],
+        };
+
+        fn calculate_hash<T: Hash>(t: &T) -> u64 {
+            let mut s = DefaultHasher::new();
+            t.hash(&mut s);
+            s.finish()
+        }
+
+        let hash1 = calculate_hash(&object1);
+        let hash2 = calculate_hash(&object2);
+        let hash3 = calculate_hash(&object3);
+
+        println!("{hash1} {hash2} {hash3}");
+
+        assert_eq!(hash1, hash2);
+        assert_ne!(hash1, hash3);
     }
 }
