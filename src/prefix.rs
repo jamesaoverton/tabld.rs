@@ -60,7 +60,9 @@ impl Prefixes {
 
     pub fn insert(&mut self, prefix: &str, base: &str) -> Option<String> {
         self.indexmap
-            .insert_sorted_by_key(prefix.to_string(), base.to_string(), |_, v| v.len())
+            .insert_sorted_by_key(prefix.to_string(), base.to_string(), |_, v| {
+                usize::MAX - v.len()
+            })
             .1
     }
 
@@ -102,5 +104,20 @@ impl Prefixes {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Make sure that longer prefixes are matched first.
+    #[test]
+    fn test_prefix_order() {
+        let mut prefixes = Prefixes::new();
+        prefixes.insert("short", "http://example.com/");
+        prefixes.insert("long", "http://example.com/long/");
+
+        assert_eq!(prefixes.compact("http://example.com/long/foo"), "long:foo");
     }
 }
