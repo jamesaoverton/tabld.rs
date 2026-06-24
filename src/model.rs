@@ -17,6 +17,7 @@ pub const BOOLEAN: &str = "http://www.w3.org/2001/XMLSchema#boolean";
 pub const SUBCLASSOF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
 pub const OWL: &str = "http://www.w3.org/2002/07/owl#";
 pub const ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
+pub const THING: &str = "http://www.w3.org/2002/07/owl#Thing";
 pub const CLASS: &str = "http://www.w3.org/2002/07/owl#Class";
 pub const OBJECT_PROPERTY: &str = "http://www.w3.org/2002/07/owl#ObjectProperty";
 pub const DATA_PROPERTY: &str = "http://www.w3.org/2002/07/owl#DataProperty";
@@ -452,7 +453,7 @@ impl Subject {
             .insert(object)
     }
 
-    pub fn predicates(&self) -> BTreeMap<String, Objects> {
+    pub fn predicates(&self) -> Predicates {
         self.map.clone()
     }
 
@@ -792,6 +793,10 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
         let mut name_subjects: IndexMap<String, IndexSet<String>> = IndexMap::new();
         let empty = BTreeSet::new();
         for subject in graph.subjects() {
+            if subject.id().as_id() == Some(&THING.to_string()) {
+                continue;
+            }
+
             let s = &subject.name;
 
             // TODO: do a better job with synonyms
@@ -828,6 +833,9 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
                     let os = subject.get(SUBCLASSOF).unwrap_or(&empty);
                     // Index subclass relations.
                     for o in os {
+                        if o.as_id() == Some(&THING.to_string()) {
+                            continue;
+                        }
                         has_super = true;
                         if let Some(o) = o.as_id() {
                             match parent_children.get_mut(o) {
