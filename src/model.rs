@@ -615,24 +615,18 @@ pub trait Graph {
 
     fn ancestors(&self, id: &str) -> BTreeSet<&String> {
         // TODO: restrictions
-        let mut results = BTreeSet::new();
-        let mut r = 0;
-        while r < 100 {
-            r += 1;
-            let parents = self.parents(id);
-            let mut added = false;
-            for parent in parents {
-                if !results.contains(&parent) {
-                    results.extend(self.ancestors(&parent));
-                    results.insert(parent);
-                    added = true;
-                }
+        let mut ancestors = BTreeSet::new();
+        let mut to_check = self.parents(id);
+        while !to_check.is_empty() {
+            let check_id = to_check.pop_first().unwrap();
+            // println!("check id {check_id}");
+            if ancestors.contains(check_id) {
+                continue;
             }
-            if !added {
-                break;
-            }
+            ancestors.insert(check_id);
+            to_check.extend(self.parents(check_id));
         }
-        results
+        ancestors
     }
 
     fn children(&self, id: &str) -> BTreeSet<&String> {
@@ -959,24 +953,18 @@ impl Graph for IndexedMemoryGraph {
 
     fn ancestors(&self, id: &str) -> BTreeSet<&String> {
         // TODO: restrictions
-        let mut results = BTreeSet::new();
-        let mut r = 0;
-        while r < 100 {
-            r += 1;
-            let parents = self.parents(id);
-            let mut added = false;
-            for parent in parents {
-                if !results.contains(&parent) {
-                    results.extend(self.ancestors(&parent));
-                    results.insert(parent);
-                    added = true;
-                }
+        let mut ancestors = BTreeSet::new();
+        let mut to_check = self.parents(id);
+        while !to_check.is_empty() {
+            let check_id = to_check.pop_first().unwrap();
+            // println!("check id {check_id}");
+            if ancestors.contains(check_id) {
+                continue;
             }
-            if !added {
-                break;
-            }
+            ancestors.insert(check_id);
+            to_check.extend(self.parents(check_id));
         }
-        results
+        ancestors
     }
 }
 
