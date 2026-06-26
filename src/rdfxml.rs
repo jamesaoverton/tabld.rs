@@ -72,7 +72,7 @@ pub fn read(input: &str) -> Result<MemoryGraph, XMLError> {
                 break;
             }
             Event::Eof => panic!("No root element"),
-            _ => (),
+            _ => continue,
         }
     }
     let qname = read_qname(start.name());
@@ -136,7 +136,7 @@ pub fn read(input: &str) -> Result<MemoryGraph, XMLError> {
                 }
             }
 
-            _ => (),
+            _ => continue,
         }
     }
 }
@@ -237,7 +237,7 @@ fn read_subject(
                 }
                 break;
             }
-            _ => (),
+            _ => continue,
         }
     }
     Ok(subject)
@@ -340,7 +340,7 @@ fn read_object(
                 return Ok(Object::plain(""));
             }
             Event::Empty(..) => {
-                return Ok(Object::id("_:empty_rdf_description"));
+                continue;
             }
             _ => panic!("Unexpected event {start:?}"),
         }
@@ -384,7 +384,7 @@ fn read_objects(
                 }
                 break;
             }
-            _ => (),
+            _ => continue,
         }
     }
     Ok(objects)
@@ -426,7 +426,7 @@ fn read_text(reader: &mut Reader<&[u8]>) -> Result<String, XMLError> {
                 let qname = read_qname(event.name());
                 panic!("empty element <{qname}/> inside literal");
             }
-            _ => (),
+            _ => continue,
         }
     }
 }
