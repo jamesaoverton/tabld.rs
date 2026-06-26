@@ -36,13 +36,17 @@ fn read_prefixes(content: &str) -> Result<Prefixes, XMLError> {
     Ok(prefixes)
 }
 
-// Read the
 fn read_qname(qname: QName<'_>) -> String {
     format!(
         "{}:{}",
-        str::from_utf8(qname.prefix().expect("Nonempty prefix").into_inner())
-            .expect("Valid prefix"),
-        str::from_utf8(qname.local_name().into_inner()).expect("Valid local name")
+        str::from_utf8(
+            qname
+                .prefix()
+                .unwrap_or(QName(b"PREFIX:LOCAL").prefix().unwrap())
+                .into_inner()
+        )
+        .unwrap_or("PREFIX"),
+        str::from_utf8(qname.local_name().into_inner()).unwrap_or("LOCAL")
     )
 }
 
@@ -334,6 +338,9 @@ fn read_object(
                     print!("</{qname2}>");
                 }
                 return Ok(Object::plain(""));
+            }
+            Event::Empty(..) => {
+                return Ok(Object::id("_:empty_rdf_description"));
             }
             _ => panic!("Unexpected event {start:?}"),
         }
