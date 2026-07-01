@@ -14,7 +14,7 @@ pub const LABEL: &str = "http://www.w3.org/2000/01/rdf-schema#label";
 pub const DATATYPE: &str = "http://www.w3.org/2000/01/rdf-schema#Datatype";
 pub const STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 pub const BOOLEAN: &str = "http://www.w3.org/2001/XMLSchema#boolean";
-pub const SUBCLASSOF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
+pub const SUBCLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
 pub const OWL: &str = "http://www.w3.org/2002/07/owl#";
 pub const ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
 pub const THING: &str = "http://www.w3.org/2002/07/owl#Thing";
@@ -22,6 +22,10 @@ pub const CLASS: &str = "http://www.w3.org/2002/07/owl#Class";
 pub const OBJECT_PROPERTY: &str = "http://www.w3.org/2002/07/owl#ObjectProperty";
 pub const DATA_PROPERTY: &str = "http://www.w3.org/2002/07/owl#DataProperty";
 pub const ANNOTATION_PROPERTY: &str = "http://www.w3.org/2002/07/owl#AnnotationProperty";
+pub const RESTRICTION: &str = "http://www.w3.org/2002/07/owl#Restriction";
+pub const ON_PROPERTY: &str = "http://www.w3.org/2002/07/owl#onProperty";
+pub const SOME_VALUES_FROM: &str = "http://www.w3.org/2002/07/owl#someValuesFrom";
+pub const INVERSE_OF: &str = "http://www.w3.org/2002/07/owl#inverseOf";
 pub const AXIOM: &str = "http://www.w3.org/2002/07/owl#Axiom";
 pub const ANNOTATED_SOURCE: &str = "http://www.w3.org/2002/07/owl#annotatedSource";
 pub const ANNOTATED_PROPERTY: &str = "http://www.w3.org/2002/07/owl#annotatedProperty";
@@ -606,7 +610,7 @@ pub trait Graph {
             Some(subject) => subject,
             None => return BTreeSet::new(),
         };
-        let supers = match subject.get(SUBCLASSOF) {
+        let supers = match subject.get(SUBCLASS_OF) {
             Some(supers) => supers,
             None => return BTreeSet::new(),
         };
@@ -632,7 +636,7 @@ pub trait Graph {
     fn children(&self, id: &str) -> BTreeSet<&String> {
         self.subjects()
             .iter()
-            .filter(|s| s.contains(SUBCLASSOF, &Object::id(id)))
+            .filter(|s| s.contains(SUBCLASS_OF, &Object::id(id)))
             .map(|s| &s.name)
             .collect()
     }
@@ -642,7 +646,7 @@ pub trait Graph {
             Some(subject) => subject,
             None => return BTreeSet::new(),
         };
-        let subjects = match subject.get(SUBCLASSOF) {
+        let subjects = match subject.get(SUBCLASS_OF) {
             Some(subjects) => subjects,
             None => return BTreeSet::new(),
         };
@@ -756,6 +760,8 @@ impl Into<Value> for MemoryGraph {
 pub struct IndexedMemoryGraph {
     id: String,
     graph: MemoryGraph,
+    // subject, predicate, objects
+    edges: IndexMap<String, IndexMap<String, IndexSet<String>>>,
     parent_children: IndexMap<String, IndexSet<String>>,
     child_parents: IndexMap<String, IndexSet<String>>,
     name_subjects: IndexMap<String, IndexSet<String>>,
@@ -778,6 +784,59 @@ impl DerefMut for IndexedMemoryGraph {
 
 impl From<MemoryGraph> for IndexedMemoryGraph {
     fn from(graph: MemoryGraph) -> Self {
+        // let restrictions: IndexMap<String, String> = indexmap! {
+        //      "http://purl.obolibrary.org/obo/BFO_0000050".to_string() =>  "http://purl.obolibrary.org/obo/BFO_0000051".to_string(),
+        //      "http://purl.obolibrary.org/obo/BFO_0000051".to_string() =>  "http://purl.obolibrary.org/obo/BFO_0000050".to_string(),
+        // };
+
+        fn some_values_from(object: &Object) -> Option<(&String, &String)> {
+            match object {
+                Object::Map { content, .. } => {
+                    if !content.contains_key(TYPE) {
+                        return None;
+                    }
+                    if !content.contains_key(ON_PROPERTY) {
+                        return None;
+                    }
+                    if !content.contains_key(SOME_VALUES_FROM) {
+                        return None;
+                    }
+
+                    let ts = content.get(TYPE).unwrap();
+                    if ts.is_empty() {
+                        return None;
+                    };
+                    let t = ts.first().unwrap();
+                    let t = match t.as_id() {
+                        Some(id) => id,
+                        None => return None,
+                    };
+                    if t != RESTRICTION {
+                        return None;
+                    }
+
+                    let ps = content.get(ON_PROPERTY).unwrap();
+                    let p = ps.first().unwrap();
+                    let p = match p.as_id() {
+                        Some(id) => id,
+                        None => return None,
+                    };
+
+                    let os = content.get(SOME_VALUES_FROM).unwrap();
+                    let o = os.first().unwrap();
+                    let o = match o.as_id() {
+                        Some(id) => id,
+                        None => return None,
+                    };
+
+                    Some((p, o))
+                }
+                _ => None,
+            }
+        }
+
+        let mut edges: IndexMap<String, IndexMap<String, IndexSet<String>>> = IndexMap::new();
+
         let mut parent_children: IndexMap<String, IndexSet<String>> = IndexMap::new();
         let mut child_parents: IndexMap<String, IndexSet<String>> = IndexMap::new();
         let mut roots: IndexMap<String, IndexSet<String>> = OWL_TYPES
@@ -785,6 +844,7 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
             .map(|s| (s.to_string(), IndexSet::new()))
             .collect();
         let mut name_subjects: IndexMap<String, IndexSet<String>> = IndexMap::new();
+        let mut inverses: IndexMap<String, String> = IndexMap::new();
         let empty = BTreeSet::new();
         for subject in graph.subjects() {
             if subject.id().as_id() == Some(&THING.to_string()) {
@@ -824,38 +884,88 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
                 Some(CLASS) => {
                     // TODO: handle equivalent classes
                     // TODO: handle restrictions
-                    let os = subject.get(SUBCLASSOF).unwrap_or(&empty);
+                    let os = subject.get(SUBCLASS_OF).unwrap_or(&empty);
                     // Index subclass relations.
                     for o in os {
                         if o.as_id() == Some(&THING.to_string()) {
                             continue;
                         }
                         has_super = true;
-                        if let Some(o) = o.as_id() {
-                            match parent_children.get_mut(o) {
-                                Some(values) => {
-                                    values.insert(s.to_string());
+                        match o {
+                            // subclass of named node
+                            Object::ID { id, .. } => {
+                                match parent_children.get_mut(id) {
+                                    Some(values) => {
+                                        values.insert(s.to_string());
+                                    }
+                                    None => {
+                                        parent_children.insert(
+                                            id.to_string(),
+                                            IndexSet::from([s.to_string()]),
+                                        );
+                                    }
                                 }
-                                None => {
-                                    parent_children
-                                        .insert(o.to_string(), IndexSet::from([s.to_string()]));
+                                match child_parents.get_mut(s) {
+                                    Some(values) => {
+                                        values.insert(id.to_string());
+                                    }
+                                    None => {
+                                        child_parents.insert(
+                                            s.to_string(),
+                                            IndexSet::from([id.to_string()]),
+                                        );
+                                    }
                                 }
+                                let o = id;
+                                // s p o
+                                edges
+                                    .entry(s.to_string())
+                                    .or_insert(IndexMap::new())
+                                    .entry(SUBCLASS_OF.to_string())
+                                    .or_insert(IndexSet::new())
+                                    .insert(o.to_string());
+                                // o i s
+                                edges
+                                    .entry(o.to_string())
+                                    .or_insert(IndexMap::new())
+                                    .entry("SUPERCLASS_OF".to_string())
+                                    .or_insert(IndexSet::new())
+                                    .insert(s.to_string());
                             }
-                            match child_parents.get_mut(s) {
-                                Some(values) => {
-                                    values.insert(o.to_string());
+                            // subclass of class expression
+                            Object::Map { .. } => {
+                                // println!("{s} {p} {o}");
+                                let po = some_values_from(o);
+                                if po.is_none() {
+                                    continue;
                                 }
-                                None => {
-                                    child_parents
-                                        .insert(s.to_string(), IndexSet::from([o.to_string()]));
-                                }
+                                let (p, o) = po.unwrap();
+                                edges
+                                    .entry(s.to_string())
+                                    .or_insert(IndexMap::new())
+                                    .entry(p.to_string())
+                                    .or_insert(IndexSet::new())
+                                    .insert(o.to_string());
                             }
+                            _ => (),
                         }
                     }
                 }
                 // TODO: handle all OWL types
+                Some(OBJECT_PROPERTY) => {
+                    if let Some(o) = subject
+                        .get(INVERSE_OF)
+                        .and_then(|os| os.first())
+                        .and_then(|o| o.as_id())
+                    {
+                        inverses.insert(s.to_string(), o.to_string());
+                        inverses.insert(o.to_string(), s.to_string());
+                    }
+                }
                 _ => (),
             }
+
+            // o i s
             // If there are no super classes/properties, then this is a root.
             if owl_type.is_some() && !has_super {
                 roots
@@ -865,6 +975,41 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
             }
         }
 
+        // let i = "http://purl.obolibrary.org/obo/UBERON_0000062";
+        // let e = edges.get(i).unwrap();
+        // println!("ORGAN BEFORE {e:#?}");
+
+        // Add all inverses.
+        for (subject, pos) in edges.clone() {
+            // if subject == "http://purl.obolibrary.org/obo/UBERON_0000062" {
+            //     println!("POS {pos:#?}");
+            // }
+            for (predicate, inverse) in inverses.iter() {
+                // if subject == "http://purl.obolibrary.org/obo/UBERON_0000062" {
+                //     println!("CHECK {predicate} {inverse}");
+                // }
+                match pos.get(predicate) {
+                    Some(objects) => {
+                        for object in objects {
+                            // if subject == "http://purl.obolibrary.org/obo/UBERON_0000062" {
+                            //     println!("INV {subject} {predicate} {inverse} {object}");
+                            // }
+                            edges
+                                .entry(object.to_string())
+                                .or_insert(IndexMap::new())
+                                .entry(inverse.to_string())
+                                .or_insert(IndexSet::new())
+                                .insert(subject.to_string());
+                        }
+                    }
+                    None => continue,
+                }
+            }
+        }
+
+        // let e = edges.get(i).unwrap();
+        // println!("ORGAN AFTER {e:#?}");
+
         // Sort from shortest to longest label.
         name_subjects.sort_by(|a, _, b, _| a.len().cmp(&b.len()));
 
@@ -872,6 +1017,7 @@ impl From<MemoryGraph> for IndexedMemoryGraph {
         Self {
             id: graph.id().clone(),
             graph,
+            edges,
             parent_children,
             child_parents,
             roots,
@@ -897,6 +1043,38 @@ impl IndexedMemoryGraph {
         match self.roots.get(&owl_type.to_string()) {
             Some(roots) => IndexSet::from_iter(roots),
             None => IndexSet::new(),
+        }
+    }
+
+    pub fn parents2(&self, id: &str, restrictions: &[&str]) -> BTreeSet<&String> {
+        let mut parents = self.parents(id);
+        let edges = self.edges(id);
+        for restriction in restrictions {
+            if let Some(objects) = edges.get(&restriction.to_string()) {
+                parents.extend(*objects);
+            }
+        }
+        parents
+    }
+
+    pub fn ancestors2(&self, id: &str, restrictions: &[&str]) -> BTreeSet<&String> {
+        let mut ancestors = BTreeSet::new();
+        let mut to_check = self.parents2(id, restrictions);
+        while !to_check.is_empty() {
+            let check_id = to_check.pop_first().unwrap();
+            if ancestors.contains(check_id) {
+                continue;
+            }
+            ancestors.insert(check_id);
+            to_check.extend(self.parents2(check_id, restrictions));
+        }
+        ancestors
+    }
+
+    pub fn edges(&self, iri: &str) -> IndexMap<&String, &IndexSet<String>> {
+        match self.edges.get(iri) {
+            Some(edges) => IndexMap::from_iter(edges),
+            None => IndexMap::new(),
         }
     }
 }
