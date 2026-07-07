@@ -1146,6 +1146,83 @@ impl Graph for IndexedMemoryGraph {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphIndex<'a> {
+    graph: &'a MemoryGraph,
+    name_subjects: IndexMap<&'a String, IndexSet<&'a String>>,
+}
+
+impl Deref for GraphIndex<'_> {
+    type Target = MemoryGraph;
+
+    fn deref(&self) -> &Self::Target {
+        &self.graph
+    }
+}
+
+impl<'a> From<&'a MemoryGraph> for GraphIndex<'a> {
+    fn from(graph: &'a MemoryGraph) -> Self {
+        let mut name_subjects: IndexMap<&'a String, IndexSet<&'a String>> = IndexMap::new();
+        for subject in graph.subjects() {
+            if subject.id().as_id() == Some(&THING.to_string()) {
+                continue;
+            }
+
+            let s = &subject.name;
+
+            // TODO: do a better job with synonyms
+            for ann in [
+                LABEL,
+                "http://purl.obolibrary.org/obo/IAO_0000118",
+                "http://www.geneontology.org/formats/oboInOwl#hasExactSynonym",
+                "http://www.geneontology.org/formats/oboInOwl#hasRelatedSynonym",
+                "http://www.geneontology.org/formats/oboInOwl#hasNarrowSynonym",
+                "http://www.geneontology.org/formats/oboInOwl#hasBroadSynonym",
+            ] {
+                if let Some(os) = subject.get(ann) {
+                    for o in os {
+                        let value = match o {
+                            Object::LanguageLiteral { value, .. } => value,
+                            Object::TypedLiteral { value, .. } => value,
+                            _ => continue,
+                        };
+                        name_subjects
+                            .entry(value)
+                            .or_insert(IndexSet::new())
+                            .insert(s);
+                    }
+                }
+            }
+        }
+
+        // let e = edges.get(i).unwrap();
+        // println!("ORGAN AFTER {e:#?}");
+
+        // Sort from shortest to longest label.
+        name_subjects.sort_by(|a, _, b, _| a.len().cmp(&b.len()));
+
+        // roots for each OWL type
+        Self {
+            graph,
+            name_subjects,
+        }
+    }
+}
+
+impl GraphIndex<'_> {
+    // Return pairs of label and IRI where text is a subset of label.
+    pub fn text(&self, text: &str, limit: usize) -> Vec<(String, String)> {
+        let text = text.to_lowercase();
+        self.name_subjects
+            .iter()
+            // .inspect(|(k, v)| println!("{k} {v:?}"))
+            .filter(|(k, _)| k.to_lowercase().contains(&text))
+            .flat_map(|(k, vs)| vs.iter().map(|v| (k.to_string(), v.to_string())))
+            .take(limit)
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
