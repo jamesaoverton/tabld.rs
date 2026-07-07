@@ -47,6 +47,47 @@ type JSONError = serde_json::Error;
 type Predicates = BTreeMap<String, Objects>;
 type Annotations = Vec<Predicates>;
 
+#[derive(Clone, Debug, PartialOrd, Ord, Eq)]
+pub struct Triple {
+    pub subject: String,
+    pub predicate: String,
+    pub object: Object,
+}
+
+impl PartialEq for Triple {
+    // Ignore annotations when testing partial equality for two Pairs.
+    fn eq(&self, other: &Self) -> bool {
+        self.subject == other.subject
+            && self.predicate == other.predicate
+            && self.object == other.object
+    }
+}
+
+// A Pair is a triple without the subject,
+// which is meaningless by itself,
+// but convenient for our purposes.
+#[derive(Clone, Debug, PartialOrd, Ord, Eq)]
+pub struct Pair {
+    pub predicate: String,
+    pub object: Object,
+}
+
+impl PartialEq for Pair {
+    // Ignore annotations when testing partial equality for two Pairs.
+    fn eq(&self, other: &Self) -> bool {
+        self.predicate == other.predicate && self.object == other.object
+    }
+}
+
+impl From<&Triple> for Pair {
+    fn from(value: &Triple) -> Self {
+        Pair {
+            predicate: value.predicate.clone(),
+            object: value.object.clone(),
+        }
+    }
+}
+
 // JSON-LD with serde_json
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, PartialOrd, Ord, Eq)]
 #[serde(untagged)]
@@ -543,12 +584,15 @@ impl Subject {
         set
     }
 
-    pub fn triples(&self) -> BTreeSet<(String, String, Object)> {
+    pub fn triples(&self) -> BTreeSet<Triple> {
         self.map
             .iter()
             .flat_map(|(p, os)| {
-                os.iter()
-                    .map(|o| (self.name.to_string(), p.to_string(), o.clone()))
+                os.iter().map(|o| Triple {
+                    subject: self.name.to_string(),
+                    predicate: p.to_string(),
+                    object: o.clone(),
+                })
             })
             .collect()
     }
@@ -653,7 +697,7 @@ pub trait Graph {
         subjects.iter().filter_map(|o| o.as_id()).collect()
     }
 
-    fn triples(&self) -> BTreeSet<(String, String, Object)> {
+    fn triples(&self) -> BTreeSet<Triple> {
         self.subjects().iter().flat_map(|s| s.triples()).collect()
     }
 }

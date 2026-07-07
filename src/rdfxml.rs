@@ -1,12 +1,17 @@
 // Read and write RDFXML like OWL API does.
 
-use quick_xml::Error as XMLError;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Cursor;
+
+use itertools::Itertools;
 use quick_xml::events::attributes::Attribute;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::name::QName;
 use quick_xml::reader::Reader;
+use quick_xml::{Error as XMLError, Writer};
 
-use crate::model::{Graph, MemoryGraph, Object, Subject};
+use crate::model::{Graph, MemoryGraph, Object, Objects, PLAIN, Pair, Subject, Triple};
 use crate::prefix::Prefixes;
 
 const DEBUG: bool = false;
@@ -55,7 +60,7 @@ fn read_attr(a: Attribute<'_>) -> String {
     String::from_utf8(a.value.into_owned()).expect("Valid attribute value")
 }
 
-// Read a string into a vector of Statements.
+// Read a string into a MemoryGraph.
 pub fn read(input: &str) -> Result<MemoryGraph, XMLError> {
     let mut reader = Reader::from_str(input);
 
@@ -429,4 +434,645 @@ fn read_text(reader: &mut Reader<&[u8]>) -> Result<String, XMLError> {
             _ => continue,
         }
     }
+}
+
+#[derive(Debug)]
+struct Properties {
+    object: BTreeSet<String>,
+}
+
+// write_file
+// write_db_table_to_file(connection, table, path) -> Result<(), XMLError> {}
+fn write_section(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    prefixes: &Prefixes,
+    properties: &Properties,
+    title: &str,
+    rdf_type: &str,
+    subjects: &BTreeSet<String>,
+    triples: &Vec<Triple>,
+) -> Result<(), XMLError> {
+    // println!("Writing section {title}");
+
+    if subjects.len() > 0 {
+        writer.write_event(Event::Text(BytesText::new(
+            "    
+
+
+    ",
+        )))?;
+        writer.write_event(Event::Comment(BytesText::new(&format!(
+            " 
+    ///////////////////////////////////////////////////////////////////////////////////////
+    //
+    // {title}
+    //
+    ///////////////////////////////////////////////////////////////////////////////////////
+     "
+        ))))?;
+        if title == "Annotations" {
+            writer.write_event(Event::Text(BytesText::new("\n\n")))?;
+        } else {
+            writer.write_event(Event::Text(BytesText::new(
+                "
+
+    
+
+",
+            )))?
+        };
+    }
+    let mut sorted = subjects.into_iter().collect::<Vec<&String>>();
+    sorted.sort();
+    for subject in sorted.iter() {
+        let sts: Vec<&Triple> = triples.iter().filter(|t| &&t.subject == subject).collect();
+        write_term(writer, prefixes, properties, rdf_type, sts)?;
+        if title != "Annotations" && subject != sorted.iter().last().unwrap() {
+            writer.write_event(Event::Text(BytesText::new(
+                "    
+
+",
+            )))?;
+        }
+    }
+    Ok(())
+}
+
+fn write_term(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    prefixes: &Prefixes,
+    properties: &Properties,
+    section_rdf_type: &str,
+    triples: Vec<&Triple>,
+) -> Result<(), XMLError> {
+    let subject = triples
+        .first()
+        .expect("At least one statement")
+        .subject
+        .clone();
+
+    let mut rdf_type = section_rdf_type;
+    let mut rdf_types = BTreeSet::new();
+    let mut owl_types = BTreeSet::new();
+    let mut is_class = false;
+    for triple in triples.iter() {
+        if triple.predicate == iri(RDF, "type") {
+            let id = triple.object.object();
+            rdf_types.insert(id.to_string());
+            if id.starts_with(OWL) || id == iri(RDF, "Description") || id == iri(RDFS, "Datatype") {
+                owl_types.insert(id);
+            }
+        } else if vec![iri(RDFS, "subClassOf"), iri(OWL, "equivalentClass")]
+            .contains(&triple.predicate)
+        {
+            is_class = true;
+        }
+    }
+
+    // Skip rdf:Description in a few edge cases
+    if section_rdf_type == &iri(RDF, "Description") && is_class && owl_types.len() == 1 {
+        return Ok(());
+    }
+
+    // Override the rdf_type in a few edge cases.
+    if section_rdf_type == &iri(OWL, "NamedIndividual") && owl_types.contains(&iri(OWL, "Thing")) {
+        rdf_type = "http://www.w3.org/2002/07/owl#Thing";
+    } else if section_rdf_type == &iri(OWL, "Class")
+        && owl_types == BTreeSet::from([String::from(&iri(RDF, "Description"))])
+    {
+        rdf_type = "http://www.w3.org/1999/02/22-rdf-syntax-ns#Description";
+    }
+
+    // OWL API adds comments before most terms.
+    if rdf_type == &iri(OWL, "Ontology") {
+        // pass
+    } else if section_rdf_type == &iri(RDF, "Description") {
+        // writer.write_indent()?;
+        writer.write_event(Event::Text(BytesText::new("    ")))?;
+    } else {
+        writer.write_indent()?;
+        writer.write_event(Event::Comment(BytesText::new(&format!(" {subject} "))))?;
+        writer.write_event(Event::Text(BytesText::new("\n\n    ")))?;
+    };
+
+    // OWL API sorts predicates in a special order.
+    let first_predicates: Vec<String> = vec![
+        // Special predicate order for owl:Ontology
+        &iri(OWL, "versionIRI"),
+        &iri(OWL, "imports"),
+        "protege:defaultLanguage",
+        "obo:IAO_0000589", // OBO foundry unique label
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    // Special predicate order for OWL logic
+    let mut logical_predicates: Vec<String> = vec![
+        &iri(RDFS, "subPropertyOf"),
+        &iri(OWL, "inverseOf"),
+        &iri(RDF, "type"),
+        &iri(OWL, "equivalentClass"),
+        &iri(RDFS, "subClassOf"),
+        &iri(RDFS, "domain"),
+        &iri(RDFS, "range"),
+        &iri(OWL, "disjointWith"),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    if rdf_type == &iri(OWL, "AnnotationProperty") {
+        logical_predicates.retain(|p| p != &iri(RDFS, "subPropertyOf"));
+    }
+    let last_predicates: Vec<String> = vec![&iri(OWL, "deprecated")]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let mut predicates: Vec<String> = triples
+        .iter()
+        .filter(|t| !first_predicates.contains(&t.predicate))
+        .filter(|t| !logical_predicates.contains(&t.predicate))
+        .filter(|t| !last_predicates.contains(&t.predicate))
+        .map(|t| t.predicate.clone())
+        .unique()
+        .collect();
+    // sort predicates
+    // object properties before annotation properties
+    predicates.sort_by(|a_curie, b_curie| {
+        let a_iri = prefixes.expand(a_curie);
+        let b_iri = prefixes.expand(b_curie);
+        match (
+            properties.object.contains(&a_iri),
+            properties.object.contains(&b_iri),
+        ) {
+            (true, true) => a_iri.cmp(&b_iri),
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => a_iri.cmp(&b_iri),
+        }
+    });
+    predicates = vec![
+        first_predicates,
+        logical_predicates.clone(),
+        predicates,
+        last_predicates,
+    ]
+    .concat();
+
+    if triples.len() == owl_types.len()
+        || (rdf_type == &iri(OWL, "NamedIndividual") && owl_types.len() > 1)
+        || (rdf_type == &iri(OWL, "Thing") && owl_types.len() > 1)
+    {
+        writer
+            .create_element(prefixes.compact(rdf_type))
+            .with_attribute(("rdf:about", subject.as_str()))
+            .write_empty()?;
+    } else {
+        // Sort to ensure objects are ordered.
+        let mut triple = triples.clone();
+        // Special ordering for OWL API
+        triple.sort_by(|a, b| {
+            a.subject
+                .cmp(&b.subject)
+                .then(a.predicate.cmp(&b.predicate))
+                .then(
+                    // sort objects
+                    if a.object.datatype() == "_JSONMAP" && b.object.datatype() == "_JSONMAP" {
+                        // classes expressions with owl:someValuesFrom goes first
+                        match (
+                            a.object.object().contains(&iri(OWL, "someValuesFrom")),
+                            b.object.object().contains(&iri(OWL, "someValuesFrom")),
+                        ) {
+                            // (true, true) => a.object.cmp(&b.object),
+                            (true, true) => Ordering::Equal,
+                            (true, false) => Ordering::Less,
+                            (false, true) => Ordering::Greater,
+                            // (false, false) => a.object.cmp(&b.object),
+                            (false, false) => Ordering::Equal,
+                        }
+                    } else if a.predicate == iri(RDF, "type") && b.predicate == iri(RDF, "type") {
+                        // rdf:type owl:NamedIndividual goes first
+                        // TODO: handle IRI/CURIE
+                        match (
+                            a.object.object() == "http://www.w3.org/2002/07/owl#NamedIndividual",
+                            b.object.object() == "http://www.w3.org/2002/07/owl#NamedIndividual",
+                        ) {
+                            (true, true) => Ordering::Equal,
+                            (true, false) => Ordering::Less,
+                            (false, true) => Ordering::Greater,
+                            (false, false) => Ordering::Equal,
+                        }
+                    } else {
+                        a.object.object().cmp(&b.object.object())
+                    },
+                )
+                .then(
+                    // sort datatypes
+                    match (a.object.datatype().as_str(), b.object.datatype().as_str()) {
+                        // rdf:PlainLiteral literals go first
+                        (
+                            "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral",
+                            "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral",
+                        ) => Ordering::Equal,
+                        ("http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral", _) => {
+                            Ordering::Less
+                        }
+                        (_, "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral") => {
+                            Ordering::Greater
+                        }
+                        (a, b) => a.cmp(&b),
+                    },
+                )
+                .then(a.object.annotation().cmp(&b.object.annotation()))
+        });
+
+        writer
+            .create_element(qname(&prefixes, rdf_type))
+            .with_attribute(("rdf:about", subject.as_str()))
+            .write_inner_content(|writer| {
+                for predicate in predicates.iter() {
+                    // Special cases where statements are split across
+                    // owl:Class, owl:NamedIndividual, and rdf:Description
+                    // elements.
+                    if owl_types.len() > 1 {
+                        if rdf_type == &iri(OWL, "Class") && predicate == &iri(RDF, "type") {
+                            continue;
+                        } else if rdf_type == &iri(OWL, "Class")
+                            && !logical_predicates.contains(&predicate)
+                        {
+                            continue;
+                        } else if rdf_type == &iri(RDF, "Description")
+                            && logical_predicates.contains(&predicate)
+                        {
+                            continue;
+                        } else if rdf_type == &iri(OWL, "NamedIndividual") {
+                            continue;
+                        }
+                    }
+                    for trp in triple.iter() {
+                        if &trp.predicate != predicate {
+                            continue;
+                        }
+                        // Don't duplicate rdf:type
+                        if predicate == &iri(RDF, "type") && trp.object.object() == rdf_type {
+                            continue;
+                        }
+                        let pair: Pair = trp.to_owned().into();
+                        write_predicate_object(writer, prefixes, &pair.predicate, &pair.object)
+                            .expect("Write element");
+                    }
+                }
+                Ok(())
+            })?;
+    }
+    // OWLAPI inserts an extra newline after each term.
+    writer.write_event(Event::Text(BytesText::new("\n")))?;
+    Ok(())
+}
+
+fn write_predicates(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    prefixes: &Prefixes,
+    predicates: &BTreeMap<String, Objects>,
+) -> Result<(), XMLError> {
+    let rdf_type = match &predicates
+        .get(&iri(RDF, "type"))
+        .expect("Valid rdf:type statement")
+        .first()
+        .expect("At least one object")
+    {
+        Object::ID { id, .. } => id,
+        b => panic!("rdf:type must be an IRI: {b:?}"),
+    };
+    writer
+        .create_element(qname(&prefixes, rdf_type))
+        .write_inner_content(|writer| {
+            let mut keys: Vec<String> = predicates.keys().map(|k| k.clone()).collect();
+            keys.sort();
+
+            // OWL API renders onProperty then qualifiedCardinality
+            let qualified_cardinality = String::from(&iri(OWL, "qualifiedCardinality"));
+            if keys.contains(&qualified_cardinality) {
+                keys.retain(|k| k != &qualified_cardinality);
+                keys.insert(0, qualified_cardinality);
+            }
+            let on_property = String::from(&iri(OWL, "onProperty"));
+            if keys.contains(&on_property) {
+                keys.retain(|k| k != &on_property);
+                keys.insert(0, on_property);
+            }
+
+            for key in keys.iter() {
+                // The rdf:type is already the element name
+                if key == &iri(RDF, "type") {
+                    continue;
+                }
+                let objects = predicates.get(key).unwrap();
+
+                for object in objects.iter() {
+                    match &object {
+                        Object::ID { id, .. } => {
+                            writer
+                                .create_element(qname(&prefixes, key))
+                                .with_attribute(("rdf:resource", id.as_str()))
+                                .write_empty()?;
+                        }
+                        Object::Map { content: map, .. } => {
+                            writer
+                                .create_element(qname(&prefixes, key))
+                                .write_inner_content(|writer| {
+                                    write_predicates(writer, &prefixes, &map)
+                                        .expect("recursion to work");
+                                    Ok(())
+                                })
+                                .expect("Recursion to work");
+                        }
+                        Object::List { list: objects, .. } => {
+                            writer
+                                .create_element(qname(&prefixes, key))
+                                .with_attribute(("rdf:parseType", "Collection"))
+                                .write_inner_content(|writer| {
+                                    write_objects(writer, &prefixes, objects)
+                                        .expect("Recursion to work");
+                                    Ok(())
+                                })
+                                .expect("Recursion to work");
+                        }
+                        Object::TypedLiteral {
+                            datatype, value, ..
+                        } => {
+                            writer
+                                .create_element(qname(&prefixes, key))
+                                .with_attribute(("rdf:datatype", datatype.as_str()))
+                                .write_text_content(BytesText::new(&value))
+                                .expect("Recursion to work");
+                        }
+                        o => panic!("Unexpected object {o:?}"),
+                    };
+                }
+            }
+            Ok(())
+        })?;
+    Ok(())
+}
+
+fn write_objects<'a>(
+    writer: &'a mut Writer<Cursor<Vec<u8>>>,
+    prefixes: &Prefixes,
+    objects: &Vec<Object>,
+) -> Result<&'a mut Writer<Cursor<Vec<u8>>>, XMLError> {
+    for object in objects.iter() {
+        match &object {
+            Object::ID { id, .. } => {
+                writer
+                    .create_element("rdf:Description")
+                    .with_attribute(("rdf:about", id.as_str()))
+                    .write_empty()?;
+            }
+            Object::Map { content: map, .. } => {
+                write_predicates(writer, prefixes, &map)?;
+            }
+            _ => todo!(),
+        };
+    }
+    Ok(writer)
+}
+
+fn write_predicate_object(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    prefixes: &Prefixes,
+    predicate: &str,
+    object: &Object,
+) -> Result<(), XMLError> {
+    match object {
+        Object::ID { id, .. } => writer
+            .create_element(qname(prefixes, predicate))
+            .with_attribute(("rdf:resource", id.as_str()))
+            .write_empty()?,
+        Object::LanguageLiteral {
+            value, language, ..
+        } => writer
+            .create_element(qname(prefixes, predicate))
+            .with_attribute(("xml:lang", language.as_str()))
+            .write_text_content(BytesText::from_escaped(value))?,
+        Object::TypedLiteral {
+            value, datatype, ..
+        } if datatype == PLAIN => writer
+            .create_element(qname(prefixes, predicate))
+            .write_text_content(BytesText::from_escaped(value))?,
+        Object::TypedLiteral {
+            value, datatype, ..
+        } => writer
+            .create_element(qname(prefixes, predicate))
+            .with_attribute(("rdf:datatype", datatype.as_str()))
+            .write_text_content(BytesText::from_escaped(value))?,
+        Object::List { list: objects, .. } => write_objects(writer, prefixes, &objects)?,
+        Object::Map { content: map, .. } => writer
+            .create_element(qname(prefixes, predicate))
+            .write_inner_content(|writer| {
+                write_predicates(writer, prefixes, &map).expect("recursion to work");
+                Ok(())
+            })
+            .expect("Recursion to work"),
+    };
+    Ok(())
+}
+
+const RDF: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
+const OWL: &str = "http://www.w3.org/2002/07/owl#";
+
+fn iri(prefix: &str, local_name: &str) -> String {
+    format!("{prefix}{local_name}")
+}
+
+// TODO: This is a hack
+fn qname(prefixes: &Prefixes, iri: &str) -> String {
+    prefixes.compact(iri)
+}
+
+pub fn write_to_string(triples: Vec<Triple>) -> Result<String, XMLError> {
+    let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 4);
+    writer.write_event(Event::Decl(BytesDecl::new("1.0", None, None)))?;
+    writer.write_event(Event::Text(BytesText::new("\n")))?;
+
+    let mut rdf_declarations = String::new();
+    let mut rdf_generator =
+        String::from(" Generated by the OWL API (version 4.5.29) https://github.com/owlcs/owlapi ");
+    for triple in triples.iter() {
+        if triple.predicate == "http://example.com/rdf_declarations" {
+            rdf_declarations = triple.object.object();
+        } else if triple.predicate == "http://example.com/rdf_generator" {
+            rdf_generator = triple.object.object();
+        }
+    }
+    if rdf_declarations == "" {
+        panic!("Did not find any XML namespace declarations");
+    }
+
+    let content = format!("rdf:RDF{rdf_declarations}");
+    let elem = BytesStart::from_content(content.as_str(), 7);
+
+    let mut prefixes = Prefixes::new();
+    for attr in elem.attributes() {
+        match attr {
+            Ok(attr) => match attr.key.prefix() {
+                Some(p) => {
+                    if p.into_inner() == "xmlns".as_bytes() {
+                        let prefix = String::from_utf8(attr.key.local_name().into_inner().to_vec())
+                            .expect("Valid local name");
+                        let iri = String::from_utf8(attr.value.into_owned())
+                            .expect("Valid attribute value");
+                        prefixes.insert(&prefix, &iri);
+                    }
+                }
+                None => continue,
+            },
+            Err(_) => continue,
+        }
+    }
+    // println!("PREFIXES {prefixes:?}");
+
+    writer.write_event(Event::Start(elem))?;
+    writer.write_event(Event::Text(BytesText::new("\n    ")))?;
+
+    let mut ontology = String::new();
+    let mut subjects = BTreeSet::new();
+    let mut annotation_properties = BTreeSet::new();
+    let mut datatypes = BTreeSet::new();
+    let mut object_properties = BTreeSet::new();
+    let mut datatype_properties = BTreeSet::new();
+    let mut classes = BTreeSet::new();
+    let mut individuals = BTreeSet::new();
+    let mut annotations = BTreeSet::new();
+
+    for triple in triples.iter() {
+        let id = triple.subject.to_string();
+        if !id.starts_with("http") {
+            continue;
+        } else if id == "https://w3id.org/sssom/mapping_justification" {
+            continue;
+        }
+
+        subjects.insert(id);
+        if triple.predicate == iri(RDFS, "subClassOf") {
+            classes.insert(triple.subject.clone());
+        }
+        if triple.predicate != iri(RDF, "type") {
+            continue;
+        }
+        match triple.object.object().as_str() {
+            "http://www.w3.org/2002/07/owl#Ontology" => {
+                ontology = triple.subject.clone();
+            }
+            "http://www.w3.org/2002/07/owl#AnnotationProperty" => {
+                annotation_properties.insert(triple.subject.clone());
+            }
+            "http://www.w3.org/2000/01/rdf-schema#Datatype" => {
+                datatypes.insert(triple.subject.clone());
+            }
+            "http://www.w3.org/2002/07/owl#ObjectProperty" => {
+                object_properties.insert(triple.subject.clone());
+            }
+            "http://www.w3.org/2002/07/owl#DatatypeProperty" => {
+                datatype_properties.insert(triple.subject.clone());
+            }
+            "http://www.w3.org/2002/07/owl#Class" => {
+                classes.insert(triple.subject.clone());
+            }
+            "http://www.w3.org/2002/07/owl#NamedIndividual"
+            | "http://www.w3.org/2002/07/owl#Thing" => {
+                individuals.insert(triple.subject.clone());
+            }
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#Description" => {
+                annotations.insert(triple.subject.clone());
+            }
+            _ => (),
+        }
+    }
+
+    let properties = Properties {
+        object: object_properties.clone(),
+    };
+    // println!("PROPERTIES {properties:?}");
+
+    // Write owl:Ontology element
+    let sts = triples.iter().filter(|s| s.subject == ontology).collect();
+    write_term(
+        &mut writer,
+        &prefixes,
+        &properties,
+        &iri(OWL, "Ontology"),
+        sts,
+    )?;
+
+    write_section(
+        &mut writer,
+        &prefixes,
+        &properties,
+        "Annotation properties",
+        &iri(OWL, "AnnotationProperty"),
+        &annotation_properties,
+        &triples,
+    )?;
+    write_section(
+        &mut writer,
+        &prefixes,
+        &properties,
+        "Datatypes",
+        &iri(RDFS, "Datatype"),
+        &datatypes,
+        &triples,
+    )?;
+    write_section(
+        &mut writer,
+        &prefixes,
+        &properties,
+        "Object Properties",
+        &iri(OWL, "ObjectProperty"),
+        &object_properties,
+        &triples,
+    )?;
+    write_section(
+        &mut writer,
+        &prefixes,
+        &properties,
+        "Data properties",
+        &iri(OWL, "DatatypeProperty"),
+        &datatype_properties,
+        &triples,
+    )?;
+    write_section(
+        &mut writer,
+        &prefixes,
+        &properties,
+        "Classes",
+        &iri(OWL, "Class"),
+        &classes,
+        &triples,
+    )?;
+    write_section(
+        &mut writer,
+        &prefixes,
+        &properties,
+        "Individuals",
+        &iri(OWL, "NamedIndividual"),
+        &individuals,
+        &triples,
+    )?;
+    write_section(
+        &mut writer,
+        &prefixes,
+        &properties,
+        "Annotations",
+        &iri(RDF, "Description"),
+        &annotations,
+        &triples,
+    )?;
+    writer.write_event(Event::End(BytesEnd::new("rdf:RDF")))?;
+    writer.write_event(Event::Text(BytesText::new("\n\n\n\n")))?;
+    writer.write_event(Event::Comment(BytesText::new(&rdf_generator)))?;
+    writer.write_event(Event::Text(BytesText::new("\n\n")))?;
+
+    let result = writer.into_inner().into_inner();
+    Ok(String::from_utf8(result).expect("Valid UTF-8"))
 }
