@@ -1,4 +1,7 @@
-use tabld::{model::Graph, rdfxml};
+use tabld::{
+    model::{Graph, IndexedMemoryGraph},
+    rdfxml,
+};
 
 fn main() {
     let path = "obi.owl";
@@ -17,14 +20,22 @@ fn main() {
     let elapsed = start.elapsed().as_millis() as usize;
     println!("Read into MemoryGraph in {elapsed}ms");
 
-    let output = rdfxml::write_to_string(Vec::from_iter(graph.triples())).expect("Write to string");
-    let elapsed = start.elapsed().as_millis() as usize - elapsed;
-    println!("Write from MemoryGraph in {elapsed}ms");
-    std::fs::write("output.owl", output).expect("Write to file");
+    // let iri = "http://purl.obolibrary.org/obo/OBI_0000453";
+    // let subject = graph.get(iri).unwrap();
+    // let subclasses = subject.get(SUBCLASS_OF).unwrap();
+    // for subclass in subclasses {
+    //     println!("{:#?}", serde_json::json!(subclass));
+    // }
+    // println!("SUBJECT {subclasses:#?}");
 
-    // let ig = IndexedMemoryGraph::from(graph);
-    // let elapsed = start.elapsed().as_millis() as usize - elapsed;
-    // println!("Read into IndexedMemoryGraph in {elapsed}ms");
+    let ig = IndexedMemoryGraph::from(graph);
+    let elapsed = start.elapsed().as_millis() as usize - elapsed;
+    println!("Read into IndexedMemoryGraph in {elapsed}ms");
+
+    let output = rdfxml::write_to_string(&ig).expect("Write to string");
+    let elapsed = start.elapsed().as_millis() as usize - elapsed;
+    println!("Write from IndexedMemoryGraph in {elapsed}ms");
+    std::fs::write("output.owl", output).expect("Write to file");
 
     // let iri = "http://purl.obolibrary.org/obo/UBERON_8480025";
     // let edges = ig.edges(iri);

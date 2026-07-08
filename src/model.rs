@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    hash::{DefaultHasher, Hash, Hasher},
     ops::{Deref, DerefMut},
 };
 
@@ -21,31 +22,37 @@ pub const THING: &str = "http://www.w3.org/2002/07/owl#Thing";
 pub const CLASS: &str = "http://www.w3.org/2002/07/owl#Class";
 pub const OBJECT_PROPERTY: &str = "http://www.w3.org/2002/07/owl#ObjectProperty";
 pub const DATA_PROPERTY: &str = "http://www.w3.org/2002/07/owl#DataProperty";
+pub const DATATYPE_PROPERTY: &str = "http://www.w3.org/2002/07/owl#DatatypeProperty";
 pub const ANNOTATION_PROPERTY: &str = "http://www.w3.org/2002/07/owl#AnnotationProperty";
 pub const RESTRICTION: &str = "http://www.w3.org/2002/07/owl#Restriction";
 pub const ON_PROPERTY: &str = "http://www.w3.org/2002/07/owl#onProperty";
 pub const SOME_VALUES_FROM: &str = "http://www.w3.org/2002/07/owl#someValuesFrom";
+pub const ALL_VALUES_FROM: &str = "http://www.w3.org/2002/07/owl#allValuesFrom";
 pub const INVERSE_OF: &str = "http://www.w3.org/2002/07/owl#inverseOf";
+pub const INTERSECTION_OF: &str = "http://www.w3.org/2002/07/owl#intersectionOf";
+pub const DISTINCT_MEMBERS: &str = "http://www.w3.org/2002/07/owl#distinctMembers";
 pub const AXIOM: &str = "http://www.w3.org/2002/07/owl#Axiom";
 pub const ANNOTATED_SOURCE: &str = "http://www.w3.org/2002/07/owl#annotatedSource";
 pub const ANNOTATED_PROPERTY: &str = "http://www.w3.org/2002/07/owl#annotatedProperty";
 pub const ANNOTATED_TARGET: &str = "http://www.w3.org/2002/07/owl#annotatedTarget";
 pub const DEPRECATED: &str = "http://www.w3.org/2002/07/owl#deprecated";
-pub const OWL_TYPES: [&str; 6] = [
+pub const OWL_TYPES: [&str; 8] = [
     ONTOLOGY,
     CLASS,
     OBJECT_PROPERTY,
     DATA_PROPERTY,
+    DATATYPE_PROPERTY,
     ANNOTATION_PROPERTY,
     DATATYPE,
+    THING,
 ];
 
 // TODO: Make this a proper error.
 pub type Error = String;
 type JSONError = serde_json::Error;
 
-type Predicates = BTreeMap<String, Objects>;
-type Annotations = Vec<Predicates>;
+pub type Predicates = BTreeMap<String, Objects>;
+pub type Annotations = Vec<Predicates>;
 
 #[derive(Clone, Debug, PartialOrd, Ord, Eq)]
 pub struct Triple {
@@ -393,6 +400,13 @@ impl Subject {
         Object::id(&self.name)
     }
 
+    pub fn set_name_from_hash(&mut self) -> &Self {
+        let mut h = DefaultHasher::new();
+        self.map.hash(&mut h);
+        self.name = format!("hash:{}", h.finish());
+        self
+    }
+
     pub fn label(&self) -> String {
         match self.map.get(LABEL) {
             Some(objects) => {
@@ -496,6 +510,14 @@ impl Subject {
             .entry(predicate.to_string())
             .or_insert(BTreeSet::new())
             .insert(object)
+    }
+
+    pub fn extend(&mut self, predicates: &Predicates) {
+        for (predicate, objects) in predicates.iter() {
+            for object in objects {
+                self.insert(predicate, object.clone());
+            }
+        }
     }
 
     pub fn predicates(&self) -> Predicates {
@@ -776,7 +798,15 @@ impl Graph for MemoryGraph {
                 }
             }
         }
-        self.subjects.insert(subject.name(), subject)
+        if self.subjects.contains_key(&subject.name()) {
+            self.subjects
+                .get_mut(&subject.name())
+                .unwrap()
+                .extend(&subject.predicates());
+            self.subjects.get(&subject.name()).cloned()
+        } else {
+            self.subjects.insert(subject.name(), subject)
+        }
     }
 }
 
