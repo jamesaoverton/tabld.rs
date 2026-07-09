@@ -1,7 +1,4 @@
-use tabld::{
-    model::{Graph, IndexedMemoryGraph},
-    rdfxml,
-};
+use tabld::{model::Graph, rdfxml};
 
 fn main() {
     let path = "obi.owl";
@@ -28,13 +25,13 @@ fn main() {
     // }
     // println!("SUBJECT {subclasses:#?}");
 
-    let ig = IndexedMemoryGraph::from(graph);
-    let elapsed = start.elapsed().as_millis() as usize - elapsed;
-    println!("Read into IndexedMemoryGraph in {elapsed}ms");
+    // let ig = IndexedMemoryGraph::from(graph);
+    // let elapsed = start.elapsed().as_millis() as usize - elapsed;
+    // println!("Read into IndexedMemoryGraph in {elapsed}ms");
 
-    let output = rdfxml::write_to_string(&ig).expect("Write to string");
+    let output = rdfxml::write_to_string(&graph).expect("Write to string");
     let elapsed = start.elapsed().as_millis() as usize - elapsed;
-    println!("Write from IndexedMemoryGraph in {elapsed}ms");
+    println!("Write from MemoryGraph in {elapsed}ms");
     std::fs::write("output.owl", output).expect("Write to file");
 
     // let iri = "http://purl.obolibrary.org/obo/UBERON_8480025";

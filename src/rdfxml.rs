@@ -12,8 +12,9 @@ use quick_xml::reader::Reader;
 use quick_xml::{Error as XMLError, Writer};
 
 use crate::model::{
-    CLASS, Graph, INTERSECTION_OF, IndexedMemoryGraph, MemoryGraph, ON_PROPERTY, Object, Objects,
-    PLAIN, Predicates, RESTRICTION, SOME_VALUES_FROM, Subject, TYPE, Triple,
+    ANNOTATED_PROPERTY, ANNOTATED_SOURCE, ANNOTATED_TARGET, AXIOM, CLASS, Graph, INTERSECTION_OF,
+    MemoryGraph, ON_PROPERTY, Object, Objects, PLAIN, Predicates, RESTRICTION, SOME_VALUES_FROM,
+    Subject, TYPE, Triple,
 };
 use crate::prefix::Prefixes;
 
@@ -454,7 +455,7 @@ struct Properties {
 // write_db_table_to_file(connection, table, path) -> Result<(), XMLError> {}
 fn write_section(
     writer: &mut Writer<Cursor<Vec<u8>>>,
-    graph: &IndexedMemoryGraph,
+    graph: &impl Graph,
     prefixes: &Prefixes,
     properties: &Properties,
     title: &str,
@@ -588,8 +589,10 @@ fn write_subject(
         iri(RDFS, "subClassOf"),
         iri(RDFS, "domain"),
         iri(RDFS, "range"),
+        iri(OWL, "propertyChainAxiom"),
         iri(OWL, "onProperty"),
         iri(OWL, "someValuesFrom"),
+        iri(OWL, "propertyDisjointWith"),
         iri(OWL, "disjointWith"),
     ];
     let mut last_predicates: Vec<String> = vec![iri(OWL, "deprecated")];
@@ -630,8 +633,8 @@ fn write_subject(
     ]
     .concat();
 
-    let mut triples: Vec<Triple> = Vec::from_iter(subject.triples());
-    if triples.len() == owl_types.len()
+    let mut annotations: Vec<Triple> = Vec::new();
+    if subject.triples().len() == owl_types.len()
         || (rdf_type == &iri(OWL, "NamedIndividual") && owl_types.len() > 1)
         || (rdf_type == &iri(OWL, "Thing") && owl_types.len() > 1)
     {
@@ -640,49 +643,6 @@ fn write_subject(
             .with_attribute(("rdf:about", subject.name().as_str()))
             .write_empty()?;
     } else {
-        // Special ordering for OWL API
-        triples.sort_by(|a, b| {
-            a.subject
-                .cmp(&b.subject)
-                .then(a.predicate.cmp(&b.predicate))
-                .then(
-                    if a.predicate == iri(RDF, "type") && b.predicate == iri(RDF, "type") {
-                        // rdf:type owl:NamedIndividual goes first
-                        // TODO: handle IRI/CURIE
-                        match (
-                            a.object.object() == "http://www.w3.org/2002/07/owl#NamedIndividual",
-                            b.object.object() == "http://www.w3.org/2002/07/owl#NamedIndividual",
-                        ) {
-                            (true, true) => Ordering::Equal,
-                            (true, false) => Ordering::Less,
-                            (false, true) => Ordering::Greater,
-                            (false, false) => Ordering::Equal,
-                        }
-                    } else {
-                        Ordering::Equal
-                    },
-                )
-                .then(compare_objects(&a.object, &b.object))
-                .then(
-                    // sort datatypes
-                    match (a.object.datatype().as_str(), b.object.datatype().as_str()) {
-                        // rdf:PlainLiteral literals go first
-                        (
-                            "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral",
-                            "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral",
-                        ) => Ordering::Equal,
-                        ("http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral", _) => {
-                            Ordering::Less
-                        }
-                        (_, "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral") => {
-                            Ordering::Greater
-                        }
-                        (a, b) => a.cmp(&b),
-                    },
-                )
-                .then(a.object.annotation().cmp(&b.object.annotation()))
-        });
-
         let element = if subject.name().starts_with("hash:") {
             writer.create_element(qname(&prefixes, rdf_type))
         } else {
@@ -710,21 +670,83 @@ fn write_subject(
                         continue;
                     }
                 }
-                for triple in triples.iter() {
-                    if &triple.predicate != predicate {
-                        continue;
+
+                let mut objects: Vec<&Object> = match subject.get(&predicate) {
+                    Some(objects) => objects.iter().collect_vec(),
+                    None => continue,
+                };
+                objects.sort_by(|a, b| {
+                    compare_objects(a, b)
+                        .then(
+                            // sort datatypes
+                            match (a.datatype().as_str(), b.datatype().as_str()) {
+                                // rdf:PlainLiteral literals go first
+                                (
+                                    "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral",
+                                    "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral",
+                                ) => Ordering::Equal,
+                                ("http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral", _) => {
+                                    Ordering::Less
+                                }
+                                (_, "http://www.w3.org/1999/02/22-rdf-syntax-ns#PlainLiteral") => {
+                                    Ordering::Greater
+                                }
+                                (a, b) => a.cmp(&b),
+                            },
+                        )
+                        .then(a.annotation().cmp(&b.annotation()))
+                });
+
+                for object in objects {
+                    if !object.annotations().is_empty() {
+                        annotations.push(Triple {
+                            subject: subject.name(),
+                            predicate: predicate.to_string(),
+                            object: object.clone(),
+                        });
                     }
                     // Don't duplicate rdf:type
-                    if predicate == &iri(RDF, "type") && triple.object.object() == rdf_type {
+                    if predicate == &iri(RDF, "type") && object.object() == rdf_type {
                         continue;
                     }
-                    write_predicate_object(writer, prefixes, &triple.predicate, &triple.object)
+                    write_predicate_object(writer, prefixes, &predicate, &object)
                         .expect("Write element");
                 }
             }
             Ok(())
         })?;
     }
+
+    for annotation in annotations {
+        for ann in annotation.object.annotations() {
+            writer
+                .create_element(qname(&prefixes, AXIOM))
+                .write_inner_content(|writer| {
+                    writer
+                        .create_element(qname(&prefixes, ANNOTATED_SOURCE))
+                        .with_attribute(("rdf:resource", annotation.subject.as_str()))
+                        .write_empty()?;
+                    writer
+                        .create_element(qname(&prefixes, ANNOTATED_PROPERTY))
+                        .with_attribute(("rdf:resource", annotation.predicate.as_str()))
+                        .write_empty()?;
+                    write_predicate_object(writer, prefixes, ANNOTATED_TARGET, &annotation.object)
+                        .expect("write annotated content");
+                    for (predicate, objects) in ann {
+                        // Skip rdf:type
+                        if predicate == TYPE {
+                            continue;
+                        }
+                        for object in objects {
+                            write_predicate_object(writer, prefixes, predicate, &object)
+                                .expect("write annotated content");
+                        }
+                    }
+                    Ok(())
+                })?;
+        }
+    }
+
     // OWLAPI inserts an extra newline after each term.
     writer.write_event(Event::Text(BytesText::new("\n")))?;
     Ok(())
@@ -788,9 +810,28 @@ fn compare_predicates(a: &Predicates, b: &Predicates) -> Ordering {
 fn compare_objects(a: &Object, b: &Object) -> Ordering {
     // sort objects
     match (a, b) {
+        (Object::ID { id: a, .. }, Object::ID { id: b, .. }) => {
+            match (
+                a == "http://www.w3.org/2002/07/owl#NamedIndividual",
+                b == "http://www.w3.org/2002/07/owl#NamedIndividual",
+            ) {
+                (true, false) => return Ordering::Less,
+                (false, true) => return Ordering::Greater,
+                _ => (),
+            };
+            // IRIs before blank nodes
+            match (a.starts_with("genid"), b.starts_with("genid")) {
+                (true, false) => return Ordering::Greater,
+                (false, true) => return Ordering::Less,
+                _ => (),
+            };
+            a.cmp(&b)
+        }
         (Object::Map { content: a_map, .. }, Object::Map { content: b_map, .. }) => {
             compare_predicates(a_map, b_map)
         }
+        (Object::ID { .. }, _) => Ordering::Less,
+        (_, Object::ID { .. }) => Ordering::Greater,
         _ => a.object().cmp(&b.object()),
     }
 }
@@ -837,10 +878,18 @@ fn write_predicates(
                 for object in objects.iter() {
                     match &object {
                         Object::ID { id, .. } => {
-                            writer
-                                .create_element(qname(&prefixes, key))
-                                .with_attribute(("rdf:resource", id.as_str()))
-                                .write_empty()?;
+                            // TODO: Do a better job handling blank nodes.
+                            if id.starts_with("genid") {
+                                writer
+                                    .create_element(qname(&prefixes, key))
+                                    .with_attribute(("rdf:nodeID", id.as_str()))
+                                    .write_empty()?;
+                            } else {
+                                writer
+                                    .create_element(qname(&prefixes, key))
+                                    .with_attribute(("rdf:resource", id.as_str()))
+                                    .write_empty()?;
+                            }
                         }
                         Object::Map { content: map, .. } => {
                             writer
@@ -910,10 +959,19 @@ fn write_predicate_object(
     object: &Object,
 ) -> Result<(), XMLError> {
     match object {
-        Object::ID { id, .. } => writer
-            .create_element(qname(prefixes, predicate))
-            .with_attribute(("rdf:resource", id.as_str()))
-            .write_empty()?,
+        Object::ID { id, .. } => {
+            if id.starts_with("genid") {
+                writer
+                    .create_element(qname(prefixes, predicate))
+                    .with_attribute(("rdf:nodeID", id.as_str()))
+                    .write_empty()?
+            } else {
+                writer
+                    .create_element(qname(prefixes, predicate))
+                    .with_attribute(("rdf:resource", id.as_str()))
+                    .write_empty()?
+            }
+        }
         Object::LanguageLiteral {
             value, language, ..
         } => writer
@@ -963,7 +1021,7 @@ fn qname(prefixes: &Prefixes, iri: &str) -> String {
     prefixes.compact(iri)
 }
 
-pub fn write_to_string(graph: &IndexedMemoryGraph) -> Result<String, XMLError> {
+pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
     let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 4);
     writer.write_event(Event::Decl(BytesDecl::new("1.0", None, None)))?;
     writer.write_event(Event::Text(BytesText::new("\n")))?;
