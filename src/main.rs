@@ -1,19 +1,42 @@
-use tabld::{model::Graph, rdfxml};
+use std::collections::HashSet;
+use tabld::{model::Graph, model::IndexedMemoryGraph, rdfxml};
 
 fn main() {
     let path = "obi.owl";
     let rdfxml_input = std::fs::read_to_string(path).expect("Read from file");
     let start = std::time::Instant::now();
     let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
-    let urls = [
-        "http://purl.obolibrary.org/obo/BFO_0000023",
-        "http://purl.obolibrary.org/obo/BFO_0000040",
-        "http://purl.obolibrary.org/obo/CARO_0020001",
-    ];
-    for url in urls {
-        let ancestors = graph.ancestors(url);
-        println!("Ancestors {}", ancestors.len());
+    let graph = IndexedMemoryGraph::from(graph);
+    let upper_terms = [&String::from("http://purl.obolibrary.org/obo/OBI_0001936")];
+    let mut output_terms: HashSet<&String> = HashSet::new();
+    for purl in upper_terms {
+        output_terms.insert(purl);
+        let mut desc_set: HashSet<&String> = HashSet::new();
+        let mut working_gen: HashSet<&String> = HashSet::new();
+        let descendents = graph.children(purl);
+        for d in descendents {
+            working_gen.insert(d);
+        }
+        while working_gen.len() > 0 {
+            let mut next_gen: HashSet<&String> = HashSet::new();
+            for i in working_gen {
+                desc_set.insert(i);
+                let descendents = graph.children(i);
+                for d in descendents {
+                    next_gen.insert(d);
+                }
+            }
+            working_gen = next_gen;
+        }
+        for d in desc_set.clone() {
+            output_terms.insert(d);
+        }
+        for term in output_terms.clone() {
+            println!("{term}");
+        }
     }
+    // not sure how to write only the terms in output_terms
+
     let elapsed = start.elapsed().as_millis() as usize;
     println!("Read into MemoryGraph in {elapsed}ms");
 
