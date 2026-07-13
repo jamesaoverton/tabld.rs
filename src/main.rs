@@ -36,6 +36,7 @@ fn main() {
         }
     }
     // not sure how to write only the terms in output_terms
+    // create new graph, clone into graph
 
     let elapsed = start.elapsed().as_millis() as usize;
     println!("Read into MemoryGraph in {elapsed}ms");
