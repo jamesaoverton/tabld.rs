@@ -1085,6 +1085,7 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
     let elem = BytesStart::from_content(content.as_str(), 7);
 
     let mut prefixes = Prefixes::new();
+    let mut prefixes_in_use = Prefixes::new();
     for attr in elem.attributes() {
         match attr {
             Ok(attr) => match attr.key.prefix() {
@@ -1102,10 +1103,6 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
             Err(_) => continue,
         }
     }
-    // println!("PREFIXES {prefixes:?}");
-
-    writer.write_event(Event::Start(elem))?;
-    writer.write_event(Event::Text(BytesText::new("\n    ")))?;
 
     let mut ontology = String::new();
     let mut annotation_properties = BTreeSet::new();
@@ -1135,6 +1132,12 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
         // }
 
         for rdf_type in subject.types() {
+            if let Some(prefix) = prefixes.prefix(rdf_type) {
+                if !prefixes_in_use.contains_key(&prefix) {
+                    prefixes_in_use.insert(&prefix, prefixes.get(&prefix).unwrap());
+                }
+            }
+
             match rdf_type {
                 "http://www.w3.org/2002/07/owl#Ontology" => {
                     ontology = id.to_string();
@@ -1168,12 +1171,46 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
                 _ => (),
             }
         }
+
+        for predicate in subject.predicates().keys() {
+            if let Some(prefix) = prefixes.prefix(predicate) {
+                if !prefixes_in_use.contains_key(&prefix) {
+                    prefixes_in_use.insert(&prefix, prefixes.get(&prefix).unwrap());
+                }
+            }
+        }
     }
+
+    // println!("available {available_prefixes:#?}");
+    println!("available {prefixes_in_use:#?}");
 
     let properties = Properties {
         object: object_properties.clone(),
     };
     // println!("PROPERTIES {properties:?}");
+
+    // Copy just the prefixes in use.
+    // This is an ugly hack.
+    let mut lines = Vec::new();
+    for line in rdf_declarations.lines() {
+        let attr = line.trim().split_once("=").unwrap().0;
+        if attr.starts_with("xmlns:") {
+            let prefix = attr.split_once(":").unwrap().1;
+            if prefixes_in_use.contains_key(prefix) {
+                lines.push(line.to_string());
+            }
+        } else if attr == "xml:base" {
+            let ws = line.split_once("xml:base").unwrap().0;
+            let x = format!(r#"{ws}xml:base="{ontology}""#);
+            lines.push(x);
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    let content = format!("rdf:RDF {}", lines.join("\n").trim());
+    let elem = BytesStart::from_content(content.as_str(), 7);
+    writer.write_event(Event::Start(elem))?;
+    writer.write_event(Event::Text(BytesText::new("\n    ")))?;
 
     // Write owl:Ontology element
     write_subject(
