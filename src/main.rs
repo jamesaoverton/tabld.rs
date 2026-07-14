@@ -4,7 +4,34 @@ use tabld::{
     rdfxml,
 };
 
-fn get_all_descs(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> HashSet<String> {
+fn filter_terms(
+    ancestors_of_lower_terms: HashSet<String>,
+    descendents_of_upper_terms: HashSet<String>,
+) -> HashSet<String> {
+    let mut output_terms: HashSet<String> = HashSet::new();
+    for purl in ancestors_of_lower_terms {
+        if descendents_of_upper_terms.contains(&purl) {
+            output_terms.insert(purl);
+        }
+    }
+    output_terms
+}
+
+// Return a HashSet of all ancestors of a set of terms
+fn get_ancestors(lower_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> HashSet<String> {
+    let mut output_terms: HashSet<String> = HashSet::new();
+    for purl in lower_terms {
+        output_terms.insert(purl.clone());
+        let ancestors = graph.ancestors(&purl);
+        for a in ancestors {
+            output_terms.insert(a.to_string());
+        }
+    }
+    output_terms
+}
+
+// Return a HashSet of all descendents of a set of terms
+fn get_descendents(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> HashSet<String> {
     let mut output_terms: HashSet<String> = HashSet::new();
     for purl in upper_terms {
         output_terms.insert(purl.clone());
@@ -32,31 +59,25 @@ fn get_all_descs(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> Ha
     output_terms
 }
 
-fn main() {
-    let path = "obi.owl";
-    let rdfxml_input = std::fs::read_to_string(path).expect("Read from file");
-    let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
-    let graph = IndexedMemoryGraph::from(graph);
-    let upper_terms = HashSet::from(["http://purl.obolibrary.org/obo/OBI_0000070".to_string()]);
-
-    let output_path = "actual.owl";
+fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
     let mut output_graph = MemoryGraph::new();
 
-    let output_terms = get_all_descs(upper_terms, &graph);
+    let metadata_names: Vec<String> = vec![
+        "http://www.w3.org/2000/01/rdf-schema#comment",
+        "http://www.w3.org/2000/01/rdf-schema#label",
+        "http://purl.obolibrary.org/obo/IAO_0000111",
+        "http://purl.obolibrary.org/obo/IAO_0000112",
+        "http://purl.obolibrary.org/obo/IAO_0000114",
+        "http://purl.obolibrary.org/obo/IAO_0000115",
+        "http://purl.obolibrary.org/obo/IAO_0000116",
+        "http://purl.obolibrary.org/obo/IAO_0000117",
+        "http://purl.obolibrary.org/obo/IAO_0000118",
+        "http://purl.obolibrary.org/obo/IAO_0000119",
+    ]
+    .iter()
+    .map(|x| x.to_string())
+    .collect();
 
-    let metadata_names = vec![
-        String::from("http://www.w3.org/2000/01/rdf-schema#comment"),
-        String::from("http://www.w3.org/2000/01/rdf-schema#label"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000111"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000112"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000114"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000115"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000116"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000117"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000118"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000119"),
-        String::from("http://purl.obolibrary.org/obo/IAO_0000233"),
-    ];
     for subject in graph.subjects() {
         let owltype = String::from(subject.owl_type().unwrap_or(""));
         if owltype == "http://www.w3.org/2002/07/owl#Ontology" {
@@ -65,8 +86,9 @@ fn main() {
             output_graph.insert(ontology);
         } else if subject.name() == "http://example.com/graph" {
             output_graph.insert(subject.clone());
-        } else if output_terms.contains(&subject.name()) || metadata_names.contains(&subject.name())
-        {
+        } else if metadata_names.contains(&subject.name()) {
+            output_graph.insert(subject.clone());
+        } else if terms.contains(&subject.name()) {
             let mut term = Subject::from_name(&subject.name());
             for (pred, objs) in subject.predicates() {
                 if let Some(pred_in_graph) = graph.get(&pred) {
@@ -78,7 +100,7 @@ fn main() {
                 }
                 for obj in objs {
                     if pred == SUBCLASS_OF {
-                        if output_terms.contains(&obj.object()) {
+                        if terms.contains(&obj.object()) {
                             term.insert(&pred, obj.clone());
                         }
                     } else if pred == "http://www.w3.org/2002/07/owl#equivalentClass" {
@@ -86,7 +108,7 @@ fn main() {
                     } else if pred == "http://www.w3.org/2002/07/owl#disjointWith" {
                         continue;
                     } else if pred == "http://www.w3.org/2000/01/rdf-schema#subPropertyOf" {
-                        continue; // this is correct but i'm not sure this is actually desirable behavior
+                        continue; // this doesn't seem to be working
                     } else {
                         term.insert(&pred, obj.clone());
                     }
@@ -95,6 +117,28 @@ fn main() {
             output_graph.insert(term);
         }
     }
+    output_graph
+}
+
+fn main() {
+    let path = "obi.owl";
+    let rdfxml_input = std::fs::read_to_string(path).expect("Read from file");
+    let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
+    let graph = IndexedMemoryGraph::from(graph);
+    let upper_terms = HashSet::from(["http://purl.obolibrary.org/obo/COB_0000035".to_string()]);
+    let lower_terms = HashSet::from([
+        "http://purl.obolibrary.org/obo/OBI_2100096".to_string(),
+        "http://purl.obolibrary.org/obo/OBI_0600016".to_string(),
+        "http://purl.obolibrary.org/obo/OBI_0003823".to_string(),
+    ]);
+
+    let output_path = "actual.owl";
+
+    // let output_terms = get_descendents(upper_terms, &graph);
+    let ancs_of_lower_terms = get_ancestors(lower_terms, &graph);
+    let descs_of_upper_terms = get_descendents(upper_terms, &graph);
+    let output_terms = filter_terms(ancs_of_lower_terms, descs_of_upper_terms);
+    let output_graph = extract(&graph, output_terms);
 
     let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
     std::fs::write(output_path, output).expect("Write to file");
