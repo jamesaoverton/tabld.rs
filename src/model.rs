@@ -255,6 +255,20 @@ impl Object {
         }
     }
 
+    pub fn is_id(&self) -> bool {
+        match self {
+            Object::ID { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_blank_node(&self) -> bool {
+        match self {
+            Object::ID { id, .. } => id.starts_with("genid"),
+            _ => false,
+        }
+    }
+
     pub fn as_id(&self) -> Option<&String> {
         match self {
             Object::ID { id, .. } => Some(id),
