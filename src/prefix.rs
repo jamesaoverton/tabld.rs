@@ -7,7 +7,7 @@ use indexmap::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Prefixes {
     indexmap: IndexMap<String, String>,
 }
@@ -48,6 +48,10 @@ impl Prefixes {
 
     pub fn get(&self, prefix: &str) -> Option<&String> {
         self.indexmap.get(prefix)
+    }
+
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.indexmap.contains_key(key)
     }
 
     pub fn keys(&self) -> Keys<'_, String, String> {

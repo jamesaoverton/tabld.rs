@@ -168,7 +168,13 @@ fn read_subject(
             let name = String::from_utf8(a.value.into_owned()).expect("Valid attribute value");
             subject.set_name(&name);
         }
-        None => (),
+        None => match start.try_get_attribute("rdf:nodeID")? {
+            Some(a) => {
+                let name = String::from_utf8(a.value.into_owned()).expect("Valid attribute value");
+                subject.set_name(&name);
+            }
+            None => (),
+        },
     };
     if DEBUG {
         if subject.name() != "" {
@@ -502,6 +508,7 @@ fn write_section(
     for subject in sorted.iter() {
         write_subject(
             writer,
+            graph,
             prefixes,
             properties,
             rdf_type,
@@ -523,6 +530,7 @@ fn write_section(
 
 fn write_subject(
     writer: &mut Writer<Cursor<Vec<u8>>>,
+    graph: &impl Graph,
     prefixes: &Prefixes,
     properties: &Properties,
     section_rdf_type: &str,
@@ -633,6 +641,7 @@ fn write_subject(
     ]
     .concat();
 
+    let mut blank_nodes: Vec<String> = Vec::new();
     let mut annotations: Vec<Triple> = Vec::new();
     if subject.triples().len() == owl_types.len()
         || (rdf_type == &iri(OWL, "NamedIndividual") && owl_types.len() > 1)
@@ -698,6 +707,9 @@ fn write_subject(
                 });
 
                 for object in objects {
+                    if object.is_blank_node() {
+                        blank_nodes.push(object.object());
+                    }
                     if !object.annotations().is_empty() {
                         annotations.push(Triple {
                             subject: subject.name(),
@@ -715,6 +727,23 @@ fn write_subject(
             }
             Ok(())
         })?;
+    }
+
+    // TODO: Each blank node subject should only be written once!
+    blank_nodes.sort();
+    for blank_node in blank_nodes.clone() {
+        if let Some(s) = graph.get(&blank_node) {
+            if let Some(rdf_type) = s.types().first() {
+                writer
+                    .create_element(qname(&prefixes, rdf_type))
+                    .with_attribute(("rdf:nodeID", blank_node.as_str()))
+                    .write_inner_content(|writer| {
+                        write_inner_predicates(writer, prefixes, &s.predicates())
+                            .expect("write inner predicates");
+                        Ok(())
+                    })?;
+            }
+        }
     }
 
     for annotation in annotations {
@@ -810,22 +839,22 @@ fn compare_predicates(a: &Predicates, b: &Predicates) -> Ordering {
 fn compare_objects(a: &Object, b: &Object) -> Ordering {
     // sort objects
     match (a, b) {
-        (Object::ID { id: a, .. }, Object::ID { id: b, .. }) => {
+        (Object::ID { id: a_id, .. }, Object::ID { id: b_id, .. }) => {
             match (
-                a == "http://www.w3.org/2002/07/owl#NamedIndividual",
-                b == "http://www.w3.org/2002/07/owl#NamedIndividual",
+                a_id == "http://www.w3.org/2002/07/owl#NamedIndividual",
+                b_id == "http://www.w3.org/2002/07/owl#NamedIndividual",
             ) {
                 (true, false) => return Ordering::Less,
                 (false, true) => return Ordering::Greater,
                 _ => (),
             };
             // IRIs before blank nodes
-            match (a.starts_with("genid"), b.starts_with("genid")) {
+            match (a.is_blank_node(), b.is_blank_node()) {
                 (true, false) => return Ordering::Greater,
                 (false, true) => return Ordering::Less,
                 _ => (),
             };
-            a.cmp(&b)
+            a_id.cmp(&b_id)
         }
         (Object::Map { content: a_map, .. }, Object::Map { content: b_map, .. }) => {
             compare_predicates(a_map, b_map)
@@ -853,80 +882,87 @@ fn write_predicates(
     writer
         .create_element(qname(&prefixes, rdf_type))
         .write_inner_content(|writer| {
-            let mut keys: Vec<String> = predicates.keys().map(|k| k.clone()).collect();
-            keys.sort();
-
-            // OWL API renders onProperty then qualifiedCardinality
-            let qualified_cardinality = String::from(&iri(OWL, "qualifiedCardinality"));
-            if keys.contains(&qualified_cardinality) {
-                keys.retain(|k| k != &qualified_cardinality);
-                keys.insert(0, qualified_cardinality);
-            }
-            let on_property = String::from(&iri(OWL, "onProperty"));
-            if keys.contains(&on_property) {
-                keys.retain(|k| k != &on_property);
-                keys.insert(0, on_property);
-            }
-
-            for key in keys.iter() {
-                // The rdf:type is already the element name
-                if key == &iri(RDF, "type") {
-                    continue;
-                }
-                let objects = predicates.get(key).unwrap();
-
-                for object in objects.iter() {
-                    match &object {
-                        Object::ID { id, .. } => {
-                            // TODO: Do a better job handling blank nodes.
-                            if id.starts_with("genid") {
-                                writer
-                                    .create_element(qname(&prefixes, key))
-                                    .with_attribute(("rdf:nodeID", id.as_str()))
-                                    .write_empty()?;
-                            } else {
-                                writer
-                                    .create_element(qname(&prefixes, key))
-                                    .with_attribute(("rdf:resource", id.as_str()))
-                                    .write_empty()?;
-                            }
-                        }
-                        Object::Map { content: map, .. } => {
-                            writer
-                                .create_element(qname(&prefixes, key))
-                                .write_inner_content(|writer| {
-                                    write_predicates(writer, &prefixes, &map)
-                                        .expect("recursion to work");
-                                    Ok(())
-                                })
-                                .expect("Recursion to work");
-                        }
-                        Object::List { list: objects, .. } => {
-                            writer
-                                .create_element(qname(&prefixes, key))
-                                .with_attribute(("rdf:parseType", "Collection"))
-                                .write_inner_content(|writer| {
-                                    write_objects(writer, &prefixes, objects)
-                                        .expect("Recursion to work");
-                                    Ok(())
-                                })
-                                .expect("Recursion to work");
-                        }
-                        Object::TypedLiteral {
-                            datatype, value, ..
-                        } => {
-                            writer
-                                .create_element(qname(&prefixes, key))
-                                .with_attribute(("rdf:datatype", datatype.as_str()))
-                                .write_text_content(BytesText::new(&value))
-                                .expect("Recursion to work");
-                        }
-                        o => panic!("Unexpected object {o:?}"),
-                    };
-                }
-            }
+            write_inner_predicates(writer, prefixes, predicates).expect("write inner predicates");
             Ok(())
         })?;
+    Ok(())
+}
+
+fn write_inner_predicates(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    prefixes: &Prefixes,
+    predicates: &BTreeMap<String, Objects>,
+) -> Result<(), XMLError> {
+    let mut keys: Vec<String> = predicates.keys().map(|k| k.clone()).collect();
+    keys.sort();
+
+    // OWL API renders onProperty then qualifiedCardinality
+    let qualified_cardinality = String::from(&iri(OWL, "qualifiedCardinality"));
+    if keys.contains(&qualified_cardinality) {
+        keys.retain(|k| k != &qualified_cardinality);
+        keys.insert(0, qualified_cardinality);
+    }
+    let on_property = String::from(&iri(OWL, "onProperty"));
+    if keys.contains(&on_property) {
+        keys.retain(|k| k != &on_property);
+        keys.insert(0, on_property);
+    }
+
+    for key in keys.iter() {
+        // The rdf:type is already the element name
+        if key == &iri(RDF, "type") {
+            continue;
+        }
+        let objects = predicates.get(key).unwrap();
+
+        for object in objects.iter() {
+            match &object {
+                Object::ID { id, .. } => {
+                    // TODO: Do a better job handling blank nodes.
+                    if object.is_blank_node() {
+                        writer
+                            .create_element(qname(&prefixes, key))
+                            .with_attribute(("rdf:nodeID", id.as_str()))
+                            .write_empty()?;
+                    } else {
+                        writer
+                            .create_element(qname(&prefixes, key))
+                            .with_attribute(("rdf:resource", id.as_str()))
+                            .write_empty()?;
+                    }
+                }
+                Object::Map { content: map, .. } => {
+                    writer
+                        .create_element(qname(&prefixes, key))
+                        .write_inner_content(|writer| {
+                            write_predicates(writer, &prefixes, &map).expect("recursion to work");
+                            Ok(())
+                        })
+                        .expect("Recursion to work");
+                }
+                Object::List { list: objects, .. } => {
+                    writer
+                        .create_element(qname(&prefixes, key))
+                        .with_attribute(("rdf:parseType", "Collection"))
+                        .write_inner_content(|writer| {
+                            write_objects(writer, &prefixes, objects).expect("Recursion to work");
+                            Ok(())
+                        })
+                        .expect("Recursion to work");
+                }
+                Object::TypedLiteral {
+                    datatype, value, ..
+                } => {
+                    writer
+                        .create_element(qname(&prefixes, key))
+                        .with_attribute(("rdf:datatype", datatype.as_str()))
+                        .write_text_content(BytesText::new(&value))
+                        .expect("Recursion to work");
+                }
+                o => panic!("Unexpected object {o:?}"),
+            };
+        }
+    }
     Ok(())
 }
 
@@ -960,7 +996,7 @@ fn write_predicate_object(
 ) -> Result<(), XMLError> {
     match object {
         Object::ID { id, .. } => {
-            if id.starts_with("genid") {
+            if object.is_blank_node() {
                 writer
                     .create_element(qname(prefixes, predicate))
                     .with_attribute(("rdf:nodeID", id.as_str()))
@@ -1049,6 +1085,7 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
     let elem = BytesStart::from_content(content.as_str(), 7);
 
     let mut prefixes = Prefixes::new();
+    let mut prefixes_in_use = Prefixes::new();
     for attr in elem.attributes() {
         match attr {
             Ok(attr) => match attr.key.prefix() {
@@ -1066,10 +1103,6 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
             Err(_) => continue,
         }
     }
-    // println!("PREFIXES {prefixes:?}");
-
-    writer.write_event(Event::Start(elem))?;
-    writer.write_event(Event::Text(BytesText::new("\n    ")))?;
 
     let mut ontology = String::new();
     let mut annotation_properties = BTreeSet::new();
@@ -1084,7 +1117,9 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
     for subject in graph.subjects() {
         let id = subject.name();
 
-        if id.starts_with("hash:") {
+        if id.starts_with("genid") {
+            continue;
+        } else if id.starts_with("hash:") {
             general_axioms.insert(id);
             continue;
         }
@@ -1097,6 +1132,12 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
         // }
 
         for rdf_type in subject.types() {
+            if let Some(prefix) = prefixes.prefix(rdf_type) {
+                if !prefixes_in_use.contains_key(&prefix) {
+                    prefixes_in_use.insert(&prefix, prefixes.get(&prefix).unwrap());
+                }
+            }
+
             match rdf_type {
                 "http://www.w3.org/2002/07/owl#Ontology" => {
                     ontology = id.to_string();
@@ -1130,16 +1171,51 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
                 _ => (),
             }
         }
+
+        for predicate in subject.predicates().keys() {
+            if let Some(prefix) = prefixes.prefix(predicate) {
+                if !prefixes_in_use.contains_key(&prefix) {
+                    prefixes_in_use.insert(&prefix, prefixes.get(&prefix).unwrap());
+                }
+            }
+        }
     }
+
+    // println!("available {available_prefixes:#?}");
+    println!("available {prefixes_in_use:#?}");
 
     let properties = Properties {
         object: object_properties.clone(),
     };
     // println!("PROPERTIES {properties:?}");
 
+    // Copy just the prefixes in use.
+    // This is an ugly hack.
+    let mut lines = Vec::new();
+    for line in rdf_declarations.lines() {
+        let attr = line.trim().split_once("=").unwrap().0;
+        if attr.starts_with("xmlns:") {
+            let prefix = attr.split_once(":").unwrap().1;
+            if prefixes_in_use.contains_key(prefix) {
+                lines.push(line.to_string());
+            }
+        } else if attr == "xml:base" {
+            let ws = line.split_once("xml:base").unwrap().0;
+            let x = format!(r#"{ws}xml:base="{ontology}""#);
+            lines.push(x);
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    let content = format!("rdf:RDF {}", lines.join("\n").trim());
+    let elem = BytesStart::from_content(content.as_str(), 7);
+    writer.write_event(Event::Start(elem))?;
+    writer.write_event(Event::Text(BytesText::new("\n    ")))?;
+
     // Write owl:Ontology element
     write_subject(
         &mut writer,
+        graph,
         &prefixes,
         &properties,
         &iri(OWL, "Ontology"),
