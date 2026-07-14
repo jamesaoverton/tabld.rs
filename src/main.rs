@@ -1,36 +1,26 @@
 use std::collections::HashSet;
 use tabld::{
-    model::{Graph, IndexedMemoryGraph, MemoryGraph, SUBCLASS_OF, Subject},
+    model::{ANNOTATION_PROPERTY, Graph, IndexedMemoryGraph, MemoryGraph, SUBCLASS_OF, Subject},
     rdfxml,
 };
 
-fn main() {
-    let path = "obi.owl";
-    let rdfxml_input = std::fs::read_to_string(path).expect("Read from file");
-    let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
-    let graph = IndexedMemoryGraph::from(graph);
-    let upper_terms = [&String::from("http://purl.obolibrary.org/obo/OBI_0001936")];
-
-    let output_path = "actual.owl";
-    let mut output_graph = MemoryGraph::new();
-
-    let mut output_terms: HashSet<&String> = HashSet::new();
-
+fn get_all_descs(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> HashSet<String> {
+    let mut output_terms: HashSet<String> = HashSet::new();
     for purl in upper_terms {
-        output_terms.insert(purl);
-        let mut desc_set: HashSet<&String> = HashSet::new();
-        let mut working_gen: HashSet<&String> = HashSet::new();
-        let descendents = graph.children(purl);
+        output_terms.insert(purl.clone());
+        let mut desc_set: HashSet<String> = HashSet::new();
+        let mut working_gen: HashSet<String> = HashSet::new();
+        let descendents = graph.children(&purl);
         for d in descendents {
-            working_gen.insert(d);
+            working_gen.insert(d.to_string());
         }
         while working_gen.len() > 0 {
-            let mut next_gen: HashSet<&String> = HashSet::new();
+            let mut next_gen: HashSet<String> = HashSet::new();
             for i in working_gen {
-                desc_set.insert(i);
-                let descendents = graph.children(i);
+                desc_set.insert(i.to_string());
+                let descendents = graph.children(&i);
                 for d in descendents {
-                    next_gen.insert(d);
+                    next_gen.insert(d.to_string());
                 }
             }
             working_gen = next_gen;
@@ -39,6 +29,21 @@ fn main() {
             output_terms.insert(d);
         }
     }
+    output_terms
+}
+
+fn main() {
+    let path = "obi.owl";
+    let rdfxml_input = std::fs::read_to_string(path).expect("Read from file");
+    let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
+    let graph = IndexedMemoryGraph::from(graph);
+    let upper_terms = HashSet::from(["http://purl.obolibrary.org/obo/OBI_0000070".to_string()]);
+
+    let output_path = "actual.owl";
+    let mut output_graph = MemoryGraph::new();
+
+    let output_terms = get_all_descs(upper_terms, &graph);
+
     let metadata_names = vec![
         String::from("http://www.w3.org/2000/01/rdf-schema#comment"),
         String::from("http://www.w3.org/2000/01/rdf-schema#label"),
@@ -50,6 +55,7 @@ fn main() {
         String::from("http://purl.obolibrary.org/obo/IAO_0000117"),
         String::from("http://purl.obolibrary.org/obo/IAO_0000118"),
         String::from("http://purl.obolibrary.org/obo/IAO_0000119"),
+        String::from("http://purl.obolibrary.org/obo/IAO_0000233"),
     ];
     for subject in graph.subjects() {
         let owltype = String::from(subject.owl_type().unwrap_or(""));
@@ -63,6 +69,13 @@ fn main() {
         {
             let mut term = Subject::from_name(&subject.name());
             for (pred, objs) in subject.predicates() {
+                if let Some(pred_in_graph) = graph.get(&pred) {
+                    if let Some(pred_type) = pred_in_graph.owl_type() {
+                        if pred_type == ANNOTATION_PROPERTY {
+                            output_graph.insert(pred_in_graph.clone());
+                        }
+                    }
+                }
                 for obj in objs {
                     if pred == SUBCLASS_OF {
                         if output_terms.contains(&obj.object()) {
@@ -70,6 +83,10 @@ fn main() {
                         }
                     } else if pred == "http://www.w3.org/2002/07/owl#equivalentClass" {
                         continue;
+                    } else if pred == "http://www.w3.org/2002/07/owl#disjointWith" {
+                        continue;
+                    } else if pred == "http://www.w3.org/2000/01/rdf-schema#subPropertyOf" {
+                        continue; // this is correct but i'm not sure this is actually desirable behavior
                     } else {
                         term.insert(&pred, obj.clone());
                     }
