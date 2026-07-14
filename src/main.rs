@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use tabld::{
-    model::{Graph, IndexedMemoryGraph, MemoryGraph, Subject},
+    model::{Graph, IndexedMemoryGraph, MemoryGraph, SUBCLASS_OF, Subject},
     rdfxml,
 };
 
@@ -59,15 +59,25 @@ fn main() {
             output_graph.insert(ontology);
         } else if subject.name() == "http://example.com/graph" {
             output_graph.insert(subject.clone());
-            println!("{subject:#?}");
         } else if output_terms.contains(&subject.name()) || metadata_names.contains(&subject.name())
         {
-            output_graph.insert(subject.clone());
+            let mut term = Subject::from_name(&subject.name());
+            for (pred, objs) in subject.predicates() {
+                for obj in objs {
+                    if pred == SUBCLASS_OF {
+                        if output_terms.contains(&obj.object()) {
+                            term.insert(&pred, obj.clone());
+                        }
+                    } else if pred == "http://www.w3.org/2002/07/owl#equivalentClass" {
+                        continue;
+                    } else {
+                        term.insert(&pred, obj.clone());
+                    }
+                }
+            }
+            output_graph.insert(term);
         }
     }
-    // for subject in output_graph.subjects() {
-    //     println!("{}", subject.name());
-    // }
 
     let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
     std::fs::write(output_path, output).expect("Write to file");
