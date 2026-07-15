@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path};
+use std::{fs::File, ops::Deref, path::Path};
 
 use csv::ReaderBuilder;
 use indexmap::{
@@ -10,6 +10,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Prefixes {
     indexmap: IndexMap<String, String>,
+}
+
+impl Deref for Prefixes {
+    type Target = IndexMap<String, String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.indexmap
+    }
 }
 
 impl Prefixes {
