@@ -1,8 +1,23 @@
+use clap::Parser;
 use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
 use tabld::{
     model::{ANNOTATION_PROPERTY, Graph, IndexedMemoryGraph, MemoryGraph, SUBCLASS_OF, Subject},
     rdfxml,
 };
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    ///load ontology from a file
+    #[arg(short, long)]
+    input: String,
+
+    ///save ontology to a file
+    #[arg(short, long)]
+    output: String,
+}
 
 fn filter_terms(
     ancestors_of_lower_terms: HashSet<String>,
@@ -111,7 +126,7 @@ fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
                     } else if pred == "http://www.w3.org/2002/07/owl#disjointWith" {
                         continue;
                     } else if pred == "http://www.w3.org/2000/01/rdf-schema#subPropertyOf" {
-                        continue;
+                        continue; // this is correct but it may not be intended behavior
                     } else if pred == "http://www.w3.org/2000/01/rdf-schema#range"
                         || obj.object() == "http://www.w3.org/2001/XMLSchema#anyURI"
                     {
@@ -128,8 +143,20 @@ fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
 }
 
 fn main() {
-    let path = "obi.owl";
-    let rdfxml_input = std::fs::read_to_string(path).expect("Read from file");
+    let args = Args::parse();
+    println!("{}", args.input);
+    println!("{}", args.output);
+
+    let input_path: String = args.input;
+    let input_path = Path::new(&input_path);
+    match fs::metadata(input_path) {
+        Ok(_) => (),
+        Err(_) => panic!("Input file does not exist."),
+    }
+    let output_path: String = args.output;
+    let output_path = Path::new(&output_path);
+
+    let rdfxml_input = std::fs::read_to_string(input_path).expect("Read from file");
     let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
     let graph = IndexedMemoryGraph::from(graph);
     let upper_terms = HashSet::from(["http://purl.obolibrary.org/obo/COB_0000035".to_string()]);
@@ -138,8 +165,6 @@ fn main() {
         "http://purl.obolibrary.org/obo/OBI_0600016".to_string(),
         "http://purl.obolibrary.org/obo/OBI_0003823".to_string(),
     ]);
-
-    let output_path = "actual.owl";
 
     // let output_terms = get_descendents(upper_terms, &graph);
     let ancs_of_lower_terms = get_ancestors(lower_terms, &graph);
