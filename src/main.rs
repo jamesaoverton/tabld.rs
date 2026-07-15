@@ -144,8 +144,6 @@ fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
 
 fn main() {
     let args = Args::parse();
-    println!("{}", args.input);
-    println!("{}", args.output);
 
     let input_path: String = args.input;
     let input_path = Path::new(&input_path);
