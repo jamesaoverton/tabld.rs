@@ -62,7 +62,7 @@ fn get_descendents(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> 
 fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
     let mut output_graph = MemoryGraph::new();
 
-    let metadata_names: Vec<String> = vec![
+    let mut metadata_names: HashSet<String> = vec![
         "http://www.w3.org/2000/01/rdf-schema#comment",
         "http://www.w3.org/2000/01/rdf-schema#label",
         "http://purl.obolibrary.org/obo/IAO_0000111",
@@ -79,6 +79,18 @@ fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
     .collect();
 
     for subject in graph.subjects() {
+        if terms.contains(&subject.name()) || metadata_names.contains(&subject.name()) {
+            for (pred, _objs) in subject.predicates() {
+                if let Some(pred_in_graph) = graph.get(&pred) {
+                    if let Some(ANNOTATION_PROPERTY) = pred_in_graph.owl_type() {
+                        metadata_names.insert(pred);
+                    }
+                }
+            }
+        }
+    }
+
+    for subject in graph.subjects() {
         let owltype = String::from(subject.owl_type().unwrap_or(""));
         if owltype == "http://www.w3.org/2002/07/owl#Ontology" {
             let mut ontology = Subject::from_type(&owltype);
@@ -86,18 +98,9 @@ fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
             output_graph.insert(ontology);
         } else if subject.name() == "http://example.com/graph" {
             output_graph.insert(subject.clone());
-        } else if metadata_names.contains(&subject.name()) {
-            output_graph.insert(subject.clone());
-        } else if terms.contains(&subject.name()) {
+        } else if terms.contains(&subject.name()) || metadata_names.contains(&subject.name()) {
             let mut term = Subject::from_name(&subject.name());
             for (pred, objs) in subject.predicates() {
-                if let Some(pred_in_graph) = graph.get(&pred) {
-                    if let Some(pred_type) = pred_in_graph.owl_type() {
-                        if pred_type == ANNOTATION_PROPERTY {
-                            output_graph.insert(pred_in_graph.clone());
-                        }
-                    }
-                }
                 for obj in objs {
                     if pred == SUBCLASS_OF {
                         if terms.contains(&obj.object()) {
@@ -108,7 +111,11 @@ fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
                     } else if pred == "http://www.w3.org/2002/07/owl#disjointWith" {
                         continue;
                     } else if pred == "http://www.w3.org/2000/01/rdf-schema#subPropertyOf" {
-                        continue; // this doesn't seem to be working
+                        continue;
+                    } else if pred == "http://www.w3.org/2000/01/rdf-schema#range"
+                        || obj.object() == "http://www.w3.org/2001/XMLSchema#anyURI"
+                    {
+                        continue;
                     } else {
                         term.insert(&pred, obj.clone());
                     }
