@@ -1,4 +1,5 @@
 use clap::Parser;
+use regex::{Error, Regex};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -17,6 +18,34 @@ struct Args {
     ///save ontology to a file
     #[arg(short, long)]
     output: String,
+
+    ///lower level term to extract
+    #[arg(short = 'l', long = "lower-term")]
+    lower_term: Option<Vec<String>>,
+
+    ///upper level term to extract
+    #[arg(short = 'u', long = "upper-term")]
+    upper_term: Option<Vec<String>>,
+}
+
+fn to_purl(curie: String) -> Result<String, Error> {
+    let curie_pattern: Regex = Regex::new(r"(?<ns>[a-zA-Z\d]+):(?<id>\d+)").unwrap();
+    let purl = match curie_pattern.replace_all(&curie, "http://purl.obolibrary.org/obo/${ns}_${id}")
+    {
+        std::borrow::Cow::Borrowed(curie) => curie.to_string(),
+        std::borrow::Cow::Owned(curie) => curie,
+    };
+    Ok(purl)
+}
+
+fn _to_curie(purl: String) -> Result<String, Error> {
+    let purl_pattern: Regex =
+        Regex::new(r"(?<url>[\w\d\./:]+/)(?<ns>[a-zA-Z\d]+)_(?<id>\d+)").unwrap();
+    let curie = match purl_pattern.replace_all(&purl, "${ns}:${id}") {
+        std::borrow::Cow::Borrowed(curie) => curie.to_string(),
+        std::borrow::Cow::Owned(curie) => curie,
+    };
+    Ok(curie)
 }
 
 fn filter_terms(
@@ -157,12 +186,21 @@ fn main() {
     let rdfxml_input = std::fs::read_to_string(input_path).expect("Read from file");
     let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
     let graph = IndexedMemoryGraph::from(graph);
-    let upper_terms = HashSet::from(["http://purl.obolibrary.org/obo/COB_0000035".to_string()]);
-    let lower_terms = HashSet::from([
-        "http://purl.obolibrary.org/obo/OBI_2100096".to_string(),
-        "http://purl.obolibrary.org/obo/OBI_0600016".to_string(),
-        "http://purl.obolibrary.org/obo/OBI_0003823".to_string(),
-    ]);
+
+    let lower_terms = match args.lower_term {
+        Some(lower_terms) => lower_terms
+            .iter()
+            .map(|x| to_purl(x.to_string()).unwrap())
+            .collect(),
+        None => HashSet::new(),
+    };
+    let upper_terms = match args.upper_term {
+        Some(upper_terms) => upper_terms
+            .iter()
+            .map(|x| to_purl(x.to_string()).unwrap())
+            .collect(),
+        None => HashSet::new(),
+    };
 
     // let output_terms = get_descendents(upper_terms, &graph);
     let ancs_of_lower_terms = get_ancestors(lower_terms, &graph);
