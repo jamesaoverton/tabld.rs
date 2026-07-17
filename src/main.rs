@@ -45,6 +45,7 @@ struct Args {
     branch_from_terms: Option<Vec<String>>,
 }
 
+// Read a file to a vector line by line
 fn read_lines(filename: String) -> std::io::Result<Vec<String>> {
     let file = fs::File::open(filename)?;
     let reader = BufReader::new(file);
@@ -55,6 +56,7 @@ fn read_lines(filename: String) -> std::io::Result<Vec<String>> {
     Ok(lines)
 }
 
+// Convert a CURIE to a PURL
 fn to_purl(curie: String) -> Result<String, Error> {
     let curie_pattern: Regex = Regex::new(r"(?<ns>[a-zA-Z\d]+):(?<id>\d+)").unwrap();
     let purl = match curie_pattern.replace_all(&curie, "http://purl.obolibrary.org/obo/${ns}_${id}")
@@ -65,6 +67,7 @@ fn to_purl(curie: String) -> Result<String, Error> {
     Ok(purl)
 }
 
+// Convert a PURL to a CURIE
 fn _to_curie(purl: String) -> Result<String, Error> {
     let purl_pattern: Regex =
         Regex::new(r"(?<url>[\w\d\./:]+/)(?<ns>[a-zA-Z\d]+)_(?<id>\d+)").unwrap();
@@ -75,6 +78,7 @@ fn _to_curie(purl: String) -> Result<String, Error> {
     Ok(curie)
 }
 
+// Return a vec of strings of PURLs from the terms provided through both sing. & pl. args
 fn gather_terms_from_arg(
     term_vec: Option<Vec<String>>,
     path_vec: Option<Vec<String>>,
@@ -107,6 +111,7 @@ fn gather_terms_from_arg(
     }
 }
 
+// Return a HashSet of only ancestors of lower terms that are beneath the upper terms
 fn filter_terms(
     ancestors_of_lower_terms: HashSet<String>,
     descendents_of_upper_terms: HashSet<String>,
@@ -273,28 +278,4 @@ fn main() {
     let output_graph = extract(&graph, output_terms);
     let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
     std::fs::write(output_path, output).expect("Write to file");
-
-    // let ig = IndexedMemoryGraph::from(graph);
-    // let elapsed = start.elapsed().as_millis() as usize - elapsed;
-    // println!("Read into IndexedMemoryGraph in {elapsed}ms");
-
-    // let output = rdfxml::write_to_string(&graph).expect("Write to string");
-    // // let elapsed = start.elapsed().as_millis() as usize - elapsed;
-    // // println!("Write from MemoryGraph in {elapsed}ms");
-    // std::fs::write("output.owl", output).expect("Write to file");
-
-    // let iri = "http://purl.obolibrary.org/obo/UBERON_0013755";
-    // let edges = ig.edges(iri);
-    // println!("EDGES {iri} {edges:#?}");
-    // let anc = ig.ancestors2(iri, &["http://purl.obolibrary.org/obo/BFO_0000050"]);
-    // println!("ANC {iri} {anc:#?}");
-
-    // let gi = GraphIndex::from(&graph);
-    // let text = gi.text("lung", 5);
-    // println!("TEXT {text:#?}");
 }
-
-// read to string: Maximum resident set size (kbytes): 97,696
-// MemporyGraph: Maximum resident set size (kbytes): 904,384
-// IndexedMemoryGraph: Maximum resident set size (kbytes): 1,032,672
-// GraphIndex: Maximum resident set size (kbytes): 939,472
