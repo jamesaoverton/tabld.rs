@@ -193,28 +193,21 @@ fn extract(
     ontology.set_name("http://example.com/expected/mireot.owl");
     output_graph.insert(ontology);
 
-    let mut metadata_names: HashSet<String> = vec![
+    let mut metadata: HashSet<String> = vec![
         "http://www.w3.org/2000/01/rdf-schema#comment",
         "http://www.w3.org/2000/01/rdf-schema#label",
-        "http://purl.obolibrary.org/obo/IAO_0000111",
-        "http://purl.obolibrary.org/obo/IAO_0000112",
-        "http://purl.obolibrary.org/obo/IAO_0000114",
-        "http://purl.obolibrary.org/obo/IAO_0000115",
-        "http://purl.obolibrary.org/obo/IAO_0000116",
-        "http://purl.obolibrary.org/obo/IAO_0000117",
-        "http://purl.obolibrary.org/obo/IAO_0000118",
-        "http://purl.obolibrary.org/obo/IAO_0000119",
+        "http://www.w3.org/2000/01/rdf-schema#isDefinedBy",
     ]
     .iter()
     .map(|x| x.to_string())
     .collect();
 
     for subject in graph.subjects() {
-        if terms.contains(&subject.name()) || metadata_names.contains(&subject.name()) {
+        if terms.contains(&subject.name()) {
             for (pred, _objs) in subject.predicates() {
                 if let Some(pred_in_graph) = graph.get(&pred) {
                     if let Some(ANNOTATION_PROPERTY) = pred_in_graph.owl_type() {
-                        metadata_names.insert(pred);
+                        metadata.insert(pred);
                     }
                 }
             }
@@ -224,7 +217,7 @@ fn extract(
     for subject in graph.subjects() {
         if subject.name() == "http://example.com/graph" {
             output_graph.insert(subject.clone());
-        } else if terms.contains(&subject.name()) || metadata_names.contains(&subject.name()) {
+        } else if terms.contains(&subject.name()) || metadata.contains(&subject.name()) {
             let mut term = Subject::from_name(&subject.name());
             for (pred, objs) in subject.predicates() {
                 for obj in objs {
