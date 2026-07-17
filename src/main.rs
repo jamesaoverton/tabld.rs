@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use tabld::model::Object;
 use tabld::{
     model::{ANNOTATION_PROPERTY, Graph, IndexedMemoryGraph, MemoryGraph, SUBCLASS_OF, Subject},
     rdfxml,
@@ -43,6 +44,10 @@ struct Args {
     ///path to file of root terms of branches to extract
     #[arg(short = 'B', long = "branch-from-terms", value_name = "textfile")]
     branch_from_terms: Option<Vec<String>>,
+
+    ///set the version iri of the output file
+    #[arg(short = 'v', long = "version-iri", value_name = "iri")]
+    version_iri: Option<String>,
 }
 
 // Read a file to a vector line by line
@@ -167,8 +172,21 @@ fn get_descendents(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> 
     output_terms
 }
 
-fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
+fn extract(
+    graph: &IndexedMemoryGraph,
+    terms: HashSet<String>,
+    version_iri: Option<String>,
+) -> MemoryGraph {
     let mut output_graph = MemoryGraph::new();
+    let mut ontology = Subject::from_type("http://www.w3.org/2002/07/owl#Ontology");
+    match version_iri {
+        Some(iri) => {
+            ontology.insert("http://www.w3.org/2002/07/owl#versionIRI", Object::id(&iri));
+        }
+        None => (),
+    }
+    ontology.set_name("http://example.com/expected/mireot.owl");
+    output_graph.insert(ontology);
 
     let mut metadata_names: HashSet<String> = vec![
         "http://www.w3.org/2000/01/rdf-schema#comment",
@@ -199,12 +217,7 @@ fn extract(graph: &IndexedMemoryGraph, terms: HashSet<String>) -> MemoryGraph {
     }
 
     for subject in graph.subjects() {
-        let owltype = String::from(subject.owl_type().unwrap_or(""));
-        if owltype == "http://www.w3.org/2002/07/owl#Ontology" {
-            let mut ontology = Subject::from_type(&owltype);
-            ontology.set_name(&subject.name());
-            output_graph.insert(ontology);
-        } else if subject.name() == "http://example.com/graph" {
+        if subject.name() == "http://example.com/graph" {
             output_graph.insert(subject.clone());
         } else if terms.contains(&subject.name()) || metadata_names.contains(&subject.name()) {
             let mut term = Subject::from_name(&subject.name());
@@ -275,7 +288,7 @@ fn main() {
         },
     };
 
-    let output_graph = extract(&graph, output_terms);
+    let output_graph = extract(&graph, output_terms, args.version_iri);
     let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
     std::fs::write(output_path, output).expect("Write to file");
 }
