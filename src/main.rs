@@ -52,11 +52,16 @@ struct Args {
 
 // Read a file to a vector line by line
 fn read_lines(filename: String) -> std::io::Result<Vec<String>> {
+    let line_comment: Regex = Regex::new(r"(?<id>\S+)(?<comment>\s+#.+)?").unwrap();
     let file = fs::File::open(filename)?;
     let reader = BufReader::new(file);
     let mut lines = Vec::new();
     for line in reader.lines() {
-        lines.push(line.unwrap());
+        let line = match line_comment.replace_all(&line.unwrap(), "${id}") {
+            std::borrow::Cow::Borrowed(id) => id.to_string(),
+            std::borrow::Cow::Owned(id) => id,
+        };
+        lines.push(line);
     }
     Ok(lines)
 }
@@ -224,7 +229,9 @@ fn extract(
             for (pred, objs) in subject.predicates() {
                 for obj in objs {
                     if pred == SUBCLASS_OF {
-                        if terms.contains(&obj.object()) {
+                        if terms.contains(&obj.object())
+                            || obj.object() == "http://www.w3.org/2002/07/owl#Thing"
+                        {
                             term.insert(&pred, obj.clone());
                         }
                     } else if pred == "http://www.w3.org/2002/07/owl#equivalentClass" {
