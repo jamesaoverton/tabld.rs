@@ -1085,7 +1085,8 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
     let elem = BytesStart::from_content(content.as_str(), 7);
 
     let mut prefixes = Prefixes::new();
-    let mut prefixes_in_use = Prefixes::new();
+    let mut prefix_order = Vec::new();
+    let mut prefixes_in_use = BTreeSet::new();
     for attr in elem.attributes() {
         match attr {
             Ok(attr) => match attr.key.prefix() {
@@ -1096,6 +1097,7 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
                         let iri = String::from_utf8(attr.value.into_owned())
                             .expect("Valid attribute value");
                         prefixes.insert(&prefix, &iri);
+                        prefix_order.push(prefix);
                     }
                 }
                 None => continue,
@@ -1133,9 +1135,7 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
 
         for rdf_type in subject.types() {
             if let Some(prefix) = prefixes.prefix(rdf_type) {
-                if !prefixes_in_use.contains_key(&prefix) {
-                    prefixes_in_use.insert(&prefix, prefixes.get(&prefix).unwrap());
-                }
+                prefixes_in_use.insert(prefix.to_string());
             }
 
             match rdf_type {
@@ -1174,40 +1174,34 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
 
         for predicate in subject.predicates().keys() {
             if let Some(prefix) = prefixes.prefix(predicate) {
-                if !prefixes_in_use.contains_key(&prefix) {
-                    prefixes_in_use.insert(&prefix, prefixes.get(&prefix).unwrap());
-                }
+                prefixes_in_use.insert(prefix.to_string());
             }
         }
     }
 
     // println!("available {available_prefixes:#?}");
-    println!("available {prefixes_in_use:#?}");
+    // println!("available {prefixes_in_use:#?}");
 
     let properties = Properties {
         object: object_properties.clone(),
     };
     // println!("PROPERTIES {properties:?}");
 
-    // Copy just the prefixes in use.
-    // This is an ugly hack.
-    let mut lines = Vec::new();
-    for line in rdf_declarations.lines() {
-        let attr = line.trim().split_once("=").unwrap().0;
-        if attr.starts_with("xmlns:") {
-            let prefix = attr.split_once(":").unwrap().1;
-            if prefixes_in_use.contains_key(prefix) {
-                lines.push(line.to_string());
+    // Copy just the prefixes in use,
+    // preserving their original order.
+    let mut lines = vec![
+        format!(r#"xmlns="{ontology}#""#),
+        format!(r#"xml:base="{ontology}""#),
+    ];
+    for prefix in prefix_order {
+        if prefixes_in_use.contains(&prefix) {
+            if let Some(base) = prefixes.get(&prefix) {
+                lines.push(format!(r#"xmlns:{prefix}="{base}""#));
             }
-        } else if attr == "xml:base" {
-            let ws = line.split_once("xml:base").unwrap().0;
-            let x = format!(r#"{ws}xml:base="{ontology}""#);
-            lines.push(x);
-        } else {
-            lines.push(line.to_string());
         }
     }
-    let content = format!("rdf:RDF {}", lines.join("\n").trim());
+    let content = lines.join("\n     ");
+    let content = format!("rdf:RDF {content}");
     let elem = BytesStart::from_content(content.as_str(), 7);
     writer.write_event(Event::Start(elem))?;
     writer.write_event(Event::Text(BytesText::new("\n    ")))?;
