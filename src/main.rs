@@ -2,6 +2,7 @@ use clap::Parser;
 use regex::{Error, Regex};
 use std::collections::HashSet;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use tabld::{
     model::{ANNOTATION_PROPERTY, Graph, IndexedMemoryGraph, MemoryGraph, SUBCLASS_OF, Subject},
@@ -12,20 +13,46 @@ use tabld::{
 #[command(version, about, long_about = None)]
 struct Args {
     ///load ontology from a file
-    #[arg(short, long)]
+    #[arg(short, long, value_name = "file")]
     input: String,
 
     ///save ontology to a file
-    #[arg(short, long)]
+    #[arg(short, long, value_name = "file")]
     output: String,
 
     ///lower level term to extract
-    #[arg(short = 'l', long = "lower-term")]
+    #[arg(short = 'l', long = "lower-term", value_name = "term")]
     lower_term: Option<Vec<String>>,
 
     ///upper level term to extract
-    #[arg(short = 'u', long = "upper-term")]
+    #[arg(short = 'u', long = "upper-term", value_name = "term")]
     upper_term: Option<Vec<String>>,
+
+    ///root term of branch to extract
+    #[arg(short = 'b', long = "branch-from-term", value_name = "term")]
+    branch_from_term: Option<Vec<String>>,
+
+    ///path to file of lower level terms to extract
+    #[arg(short = 'L', long = "lower-terms", value_name = "textfile")]
+    lower_terms: Option<Vec<String>>,
+
+    ///path to file of upper level terms to extract
+    #[arg(short = 'U', long = "upper-terms", value_name = "textfile")]
+    upper_terms: Option<Vec<String>>,
+
+    ///path to file of root terms of branches to extract
+    #[arg(short = 'B', long = "branch-from-terms", value_name = "textfile")]
+    branch_from_terms: Option<Vec<String>>,
+}
+
+fn read_lines(filename: String) -> std::io::Result<Vec<String>> {
+    let file = fs::File::open(filename)?;
+    let reader = BufReader::new(file);
+    let mut lines = Vec::new();
+    for line in reader.lines() {
+        lines.push(line.unwrap());
+    }
+    Ok(lines)
 }
 
 fn to_purl(curie: String) -> Result<String, Error> {
@@ -46,6 +73,38 @@ fn _to_curie(purl: String) -> Result<String, Error> {
         std::borrow::Cow::Owned(curie) => curie,
     };
     Ok(curie)
+}
+
+fn gather_terms_from_arg(
+    term_vec: Option<Vec<String>>,
+    path_vec: Option<Vec<String>>,
+) -> Option<HashSet<String>> {
+    match term_vec {
+        Some(terms) => Some(
+            terms
+                .iter()
+                .map(|x| to_purl(x.to_string()).unwrap())
+                .collect(),
+        ),
+        None => match path_vec {
+            Some(files) => {
+                let mut all_terms: Vec<String> = Vec::new();
+                for i in files {
+                    let file_terms = read_lines(i).unwrap();
+                    for term in file_terms {
+                        all_terms.push(term);
+                    }
+                }
+                Some(
+                    all_terms
+                        .iter()
+                        .map(|x| to_purl(x.to_string()).unwrap())
+                        .collect(),
+                )
+            }
+            None => None,
+        },
+    }
 }
 
 fn filter_terms(
@@ -178,8 +237,13 @@ fn main() {
     let input_path = Path::new(&input_path);
     match fs::metadata(input_path) {
         Ok(_) => (),
-        Err(_) => panic!("Input file does not exist."),
+        Err(_) => panic!("Input file does not exist"),
     }
+
+    let branch_from = gather_terms_from_arg(args.branch_from_term, args.branch_from_terms);
+    let lower_terms = gather_terms_from_arg(args.lower_term, args.lower_terms);
+    let upper_terms = gather_terms_from_arg(args.upper_term, args.upper_terms);
+
     let output_path: String = args.output;
     let output_path = Path::new(&output_path);
 
@@ -187,40 +251,28 @@ fn main() {
     let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
     let graph = IndexedMemoryGraph::from(graph);
 
-    let lower_terms = match args.lower_term {
-        Some(lower_terms) => lower_terms
-            .iter()
-            .map(|x| to_purl(x.to_string()).unwrap())
-            .collect(),
-        None => HashSet::new(),
-    };
-    let upper_terms = match args.upper_term {
-        Some(upper_terms) => upper_terms
-            .iter()
-            .map(|x| to_purl(x.to_string()).unwrap())
-            .collect(),
-        None => HashSet::new(),
+    let output_terms: HashSet<String> = match branch_from {
+        Some(terms) => get_descendents(terms, &graph),
+        None => match lower_terms {
+            Some(lowers) => {
+                let ancestors = get_ancestors(lowers, &graph);
+                match upper_terms {
+                    Some(uppers) => {
+                        let descendents = get_descendents(uppers, &graph);
+                        filter_terms(ancestors, descendents)
+                    }
+                    None => ancestors,
+                }
+            }
+            None => panic!(
+                "MISSING MIREOT TERMS ERROR either lower term(s) or branch term(s) must be specified for MIREOT\nFor details see: http://robot.obolibrary.org/extract#missing-mireot-terms-error"
+            ),
+        },
     };
 
-    // let output_terms = get_descendents(upper_terms, &graph);
-    let ancs_of_lower_terms = get_ancestors(lower_terms, &graph);
-    let descs_of_upper_terms = get_descendents(upper_terms, &graph);
-    let output_terms = filter_terms(ancs_of_lower_terms, descs_of_upper_terms);
     let output_graph = extract(&graph, output_terms);
-
     let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
     std::fs::write(output_path, output).expect("Write to file");
-
-    // let elapsed = start.elapsed().as_millis() as usize;
-    // println!("Read into MemoryGraph in {elapsed}ms");
-
-    // let iri = "http://purl.obolibrary.org/obo/OBI_0000453";
-    // let subject = graph.get(iri).unwrap();
-    // let subclasses = subject.get(SUBCLASS_OF).unwrap();
-    // for subclass in subclasses {
-    //     println!("{:#?}", serde_json::json!(subclass));
-    // }
-    // println!("SUBJECT {subclasses:#?}");
 
     // let ig = IndexedMemoryGraph::from(graph);
     // let elapsed = start.elapsed().as_millis() as usize - elapsed;
