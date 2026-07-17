@@ -1086,7 +1086,7 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
 
     let mut prefixes = Prefixes::new();
     let mut prefix_order = Vec::new();
-    let mut prefixes_in_use = BTreeSet::new();
+    let mut prefixes_in_use = BTreeSet::from(["xml".to_string(), "xsd".to_string()]);
     for attr in elem.attributes() {
         match attr {
             Ok(attr) => match attr.key.prefix() {
