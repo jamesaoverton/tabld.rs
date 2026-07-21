@@ -204,10 +204,21 @@ fn extract(
 
     for subject in graph.subjects() {
         if terms.contains(&subject.name()) {
-            for (pred, _objs) in subject.predicates() {
-                if let Some(pred_in_graph) = graph.get(&pred) {
-                    if let Some(ANNOTATION_PROPERTY) = pred_in_graph.owl_type() {
+            for (pred, objs) in subject.predicates() {
+                if let Some(pred_as_subj) = graph.get(&pred) {
+                    if pred_as_subj.owl_types().contains(ANNOTATION_PROPERTY) {
+                        println!("{}", pred.to_string());
                         metadata.insert(pred);
+                        // for obj in objs {
+                        //     // let obj_preds = obj.predicates();
+                        //     for obj_pred in obj_preds {
+                        //         if let Some(obj_subj) = graph.get(obj_pred) {
+                        //             if let Some(ANNOTATION_PROPERTY) = obj_subj.owl_type() {
+                        //                 metadata.insert(obj_pred.to_string());
+                        //             }
+                        //         }
+                        //     }
+                        // }
                     }
                 }
             }
