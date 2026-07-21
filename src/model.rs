@@ -359,6 +359,36 @@ impl Object {
         }
         core
     }
+
+    // Return a set of all predicate IRIs used in this object, recursively.
+    pub fn predicates(&self) -> BTreeSet<&String> {
+        let (mut core, annotations) = match self {
+            Object::ID { annotations, .. }
+            | Object::LanguageLiteral { annotations, .. }
+            | Object::TypedLiteral { annotations, .. } => (BTreeSet::new(), annotations),
+            Object::List { list, annotations } => (
+                list.iter().map(|o| o.predicates()).flatten().collect(),
+                annotations,
+            ),
+            Object::Map {
+                content,
+                annotations,
+            } => {
+                let mut set = BTreeSet::new();
+                for (predicate, _objects) in content {
+                    set.insert(predicate);
+                }
+                (set, annotations)
+            }
+        };
+        for annotations in annotations.into_iter() {
+            for (p, os) in annotations.into_iter() {
+                core.insert(p);
+                core.extend(os.into_iter().flat_map(|o| o.predicates()));
+            }
+        }
+        core
+    }
 }
 
 pub type Objects = BTreeSet<Object>;
@@ -1365,5 +1395,17 @@ mod tests {
 
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, hash3);
+
+        let predicates4 =
+            BTreeMap::from([("baz".to_string(), BTreeSet::from([Object::id("BAZ")]))]);
+        let object4 = Object::Map {
+            content: predicates1.clone(),
+            annotations: vec![predicates4.clone()],
+        };
+        let predicates = object4.predicates();
+        assert_eq!(
+            BTreeSet::from([&"foo".to_string(), &"bar".to_string(), &"baz".to_string()]),
+            predicates
+        );
     }
 }
