@@ -746,6 +746,8 @@ fn write_subject(
         }
     }
 
+    annotations.sort();
+
     for annotation in annotations {
         for ann in annotation.object.annotations() {
             writer
@@ -1086,7 +1088,7 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
 
     let mut prefixes = Prefixes::new();
     let mut prefix_order = Vec::new();
-    let mut prefixes_in_use = BTreeSet::new();
+    let mut prefixes_in_use = BTreeSet::from(["xml".to_string(), "xsd".to_string()]);
     for attr in elem.attributes() {
         match attr {
             Ok(attr) => match attr.key.prefix() {
@@ -1172,6 +1174,9 @@ pub fn write_to_string(graph: &impl Graph) -> Result<String, XMLError> {
             }
         }
 
+        // WARN: This probably needs to look into nested objects:
+        // their rdf:types and predicates
+        // which will become element names.
         for predicate in subject.predicates().keys() {
             if let Some(prefix) = prefixes.prefix(predicate) {
                 prefixes_in_use.insert(prefix.to_string());
@@ -1358,6 +1363,6 @@ mod tests {
             compare_objects(&c, &a),
             "Class before Restriction"
         );
-        assert!(false, "DONE");
+        // assert!(false, "DONE");
     }
 }
