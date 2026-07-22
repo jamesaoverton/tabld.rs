@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use tabld::model::Object;
+use tabld::model::{AXIOM, Object};
 use tabld::{
     model::{ANNOTATION_PROPERTY, Graph, IndexedMemoryGraph, MemoryGraph, SUBCLASS_OF, Subject},
     rdfxml,
@@ -201,24 +201,29 @@ fn extract(
     .iter()
     .map(|x| x.to_string())
     .collect();
-
     for subject in graph.subjects() {
+        let mut working_properties: HashSet<String> = HashSet::new();
         if terms.contains(&subject.name()) {
-            for (pred, objs) in subject.predicates() {
+            for (pred, _objs) in subject.predicates() {
                 if let Some(pred_as_subj) = graph.get(&pred) {
                     if pred_as_subj.owl_types().contains(ANNOTATION_PROPERTY) {
-                        println!("{}", pred.to_string());
-                        metadata.insert(pred);
-                        // for obj in objs {
-                        //     // let obj_preds = obj.predicates();
-                        //     for obj_pred in obj_preds {
-                        //         if let Some(obj_subj) = graph.get(obj_pred) {
-                        //             if let Some(ANNOTATION_PROPERTY) = obj_subj.owl_type() {
-                        //                 metadata.insert(obj_pred.to_string());
-                        //             }
-                        //         }
-                        //     }
-                        // }
+                        working_properties.insert(pred);
+                        while working_properties.len() != 0 {
+                            let mut next_round: HashSet<String> = HashSet::new();
+                            for property in working_properties.clone() {
+                                metadata.insert(property.clone());
+                                if let Some(prop_as_subj) = graph.get(&property) {
+                                    if prop_as_subj.owl_types().contains(ANNOTATION_PROPERTY) {
+                                        for (pred, _objs) in prop_as_subj.predicates() {
+                                            if !metadata.contains(&pred) {
+                                                next_round.insert(pred);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            working_properties = next_round;
+                        }
                     }
                 }
             }
