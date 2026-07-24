@@ -3,6 +3,90 @@ use crate::model::{
 };
 use std::collections::{BTreeSet, HashSet};
 
+// Return a HashSet of only ancestors of lower terms that are beneath the upper terms
+fn filter_terms(
+    ancestors_of_lower_terms: HashSet<String>,
+    descendents_of_upper_terms: HashSet<String>,
+) -> HashSet<String> {
+    let mut output_terms: HashSet<String> = HashSet::new();
+    for purl in ancestors_of_lower_terms {
+        if descendents_of_upper_terms.contains(&purl) {
+            output_terms.insert(purl);
+        }
+    }
+    output_terms
+}
+
+// Return a HashSet of all ancestors of a set of terms
+fn get_ancestors(lower_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> HashSet<String> {
+    let mut output_terms: HashSet<String> = HashSet::new();
+    for purl in lower_terms {
+        output_terms.insert(purl.clone());
+        let ancestors = graph.ancestors(&purl);
+        for a in ancestors {
+            output_terms.insert(a.to_string());
+        }
+    }
+    output_terms
+}
+
+// Return a HashSet of all descendents of a set of terms
+fn get_descendents(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> HashSet<String> {
+    let mut output_terms: HashSet<String> = HashSet::new();
+    for purl in upper_terms {
+        output_terms.insert(purl.clone());
+        let mut desc_set: HashSet<String> = HashSet::new();
+        let mut working_gen: HashSet<String> = HashSet::new();
+        let descendents = graph.children(&purl);
+        for d in descendents {
+            working_gen.insert(d.to_string());
+        }
+        while working_gen.len() > 0 {
+            let mut next_gen: HashSet<String> = HashSet::new();
+            for i in working_gen {
+                desc_set.insert(i.to_string());
+                let descendents = graph.children(&i);
+                for d in descendents {
+                    next_gen.insert(d.to_string());
+                }
+            }
+            working_gen = next_gen;
+        }
+        for d in desc_set.clone() {
+            output_terms.insert(d);
+        }
+    }
+    output_terms
+}
+
+// Produce a HashSet of desired output classes based on input options
+pub fn mireot_terms(
+    branch_from: Option<HashSet<String>>,
+    lower_terms: Option<HashSet<String>>,
+    upper_terms: Option<HashSet<String>>,
+    graph: &IndexedMemoryGraph,
+) -> HashSet<String> {
+    let output_terms: HashSet<String> = match branch_from {
+        Some(terms) => get_descendents(terms, &graph),
+        None => match lower_terms {
+            Some(lowers) => {
+                let ancestors = get_ancestors(lowers, &graph);
+                match upper_terms {
+                    Some(uppers) => {
+                        let descendents = get_descendents(uppers, &graph);
+                        filter_terms(ancestors, descendents)
+                    }
+                    None => ancestors,
+                }
+            }
+            None => panic!(
+                "MISSING MIREOT TERMS ERROR either lower term(s) or branch term(s) must be specified for MIREOT\nFor details see: http://robot.obolibrary.org/extract#missing-mireot-terms-error"
+            ),
+        },
+    };
+    output_terms
+}
+
 // Produce a MemoryGraph with desired terms and all necessary metadata
 pub fn mireot_extract(
     graph: &IndexedMemoryGraph,

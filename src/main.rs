@@ -4,11 +4,8 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use tabld::{
-    mireot::mireot_extract,
-    model::{Graph, IndexedMemoryGraph},
-    rdfxml,
-};
+use tabld::mireot::mireot_terms;
+use tabld::{mireot::mireot_extract, model::IndexedMemoryGraph, rdfxml};
 
 #[derive(Parser, Debug)]
 #[command(name = "extract", version, about, long_about = None)]
@@ -157,124 +154,52 @@ fn gather_terms_from_arg(
     }
 }
 
-// Return a HashSet of only ancestors of lower terms that are beneath the upper terms
-fn filter_terms(
-    ancestors_of_lower_terms: HashSet<String>,
-    descendents_of_upper_terms: HashSet<String>,
-) -> HashSet<String> {
-    let mut output_terms: HashSet<String> = HashSet::new();
-    for purl in ancestors_of_lower_terms {
-        if descendents_of_upper_terms.contains(&purl) {
-            output_terms.insert(purl);
-        }
-    }
-    output_terms
-}
-
-// Return a HashSet of all ancestors of a set of terms
-fn get_ancestors(lower_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> HashSet<String> {
-    let mut output_terms: HashSet<String> = HashSet::new();
-    for purl in lower_terms {
-        output_terms.insert(purl.clone());
-        let ancestors = graph.ancestors(&purl);
-        for a in ancestors {
-            output_terms.insert(a.to_string());
-        }
-    }
-    output_terms
-}
-
-// Return a HashSet of all descendents of a set of terms
-fn get_descendents(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> HashSet<String> {
-    let mut output_terms: HashSet<String> = HashSet::new();
-    for purl in upper_terms {
-        output_terms.insert(purl.clone());
-        let mut desc_set: HashSet<String> = HashSet::new();
-        let mut working_gen: HashSet<String> = HashSet::new();
-        let descendents = graph.children(&purl);
-        for d in descendents {
-            working_gen.insert(d.to_string());
-        }
-        while working_gen.len() > 0 {
-            let mut next_gen: HashSet<String> = HashSet::new();
-            for i in working_gen {
-                desc_set.insert(i.to_string());
-                let descendents = graph.children(&i);
-                for d in descendents {
-                    next_gen.insert(d.to_string());
-                }
-            }
-            working_gen = next_gen;
-        }
-        for d in desc_set.clone() {
-            output_terms.insert(d);
-        }
-    }
-    output_terms
-}
-
 fn main() {
     let cli = Cli::parse();
     match &cli.command {
-        Commands::Mireot(mireot_args) => {
-            let input_path: String = mireot_args.input.clone();
+        Commands::Mireot(args) => {
+            let input_path: String = args.input.clone();
+            let input_path = Path::new(&input_path);
+            let rdfxml_input = match fs::metadata(input_path) {
+                Ok(_) => std::fs::read_to_string(input_path).expect("Read from file"),
+                Err(_) => panic!("Input file does not exist"),
+            };
+            let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
+            let graph = IndexedMemoryGraph::from(graph);
+
+            let branch_from = gather_terms_from_arg(
+                args.branch_from_term.clone(),
+                args.branch_from_terms.clone(),
+            );
+            let lower_terms =
+                gather_terms_from_arg(args.lower_term.clone(), args.lower_terms.clone());
+            let upper_terms =
+                gather_terms_from_arg(args.upper_term.clone(), args.upper_terms.clone());
+            let output_terms = mireot_terms(branch_from, lower_terms, upper_terms, &graph);
+
+            let output_path: String = args.output.clone();
+            let output_path = Path::new(&output_path);
+            let output_graph = mireot_extract(&graph, output_terms, args.version_iri.clone());
+            let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
+            std::fs::write(output_path, output).expect("Write to file");
+        }
+
+        Commands::Subset(args) => {
+            let input_path: String = args.input.clone();
             let input_path = Path::new(&input_path);
             match fs::metadata(input_path) {
                 Ok(_) => (),
                 Err(_) => panic!("Input file does not exist"),
             }
 
-            let branch_from = gather_terms_from_arg(
-                mireot_args.branch_from_term.clone(),
-                mireot_args.branch_from_terms.clone(),
-            );
-            let lower_terms = gather_terms_from_arg(
-                mireot_args.lower_term.clone(),
-                mireot_args.lower_terms.clone(),
-            );
-            let upper_terms = gather_terms_from_arg(
-                mireot_args.upper_term.clone(),
-                mireot_args.upper_terms.clone(),
-            );
+            let terms = gather_terms_from_arg(args.term.clone(), args.term_file.clone());
 
-            let output_path: String = mireot_args.output.clone();
+            let output_path: String = args.output.clone();
             let output_path = Path::new(&output_path);
 
             let rdfxml_input = std::fs::read_to_string(input_path).expect("Read from file");
             let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
             let graph = IndexedMemoryGraph::from(graph);
-            let output_terms: HashSet<String> = match branch_from {
-                Some(terms) => get_descendents(terms, &graph),
-                None => match lower_terms {
-                    Some(lowers) => {
-                        let ancestors = get_ancestors(lowers, &graph);
-                        match upper_terms {
-                            Some(uppers) => {
-                                let descendents = get_descendents(uppers, &graph);
-                                filter_terms(ancestors, descendents)
-                            }
-                            None => ancestors,
-                        }
-                    }
-                    None => panic!(
-                        "MISSING MIREOT TERMS ERROR either lower term(s) or branch term(s) must be specified for MIREOT\nFor details see: http://robot.obolibrary.org/extract#missing-mireot-terms-error"
-                    ),
-                },
-            };
-            let output_graph =
-                mireot_extract(&graph, output_terms, mireot_args.version_iri.clone());
-            let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
-            std::fs::write(output_path, output).expect("Write to file");
-        }
-        Commands::Subset(subset_args) => {
-            let input_path: String = subset_args.input.clone();
-            let input_path = Path::new(&input_path);
-            match fs::metadata(input_path) {
-                Ok(_) => (),
-                Err(_) => panic!("Input file does not exist"),
-            }
-            // let terms =
-            //     gather_terms_from_arg(subset_args.term.clone(), subset_args.term_file.clone());
         }
     }
 }
