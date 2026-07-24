@@ -4,14 +4,14 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use tabld::model::{AXIOM, Object};
+use tabld::model::{ANNOTATED_SOURCE, ANNOTATED_TARGET, AXIOM, Object};
 use tabld::{
     model::{ANNOTATION_PROPERTY, Graph, IndexedMemoryGraph, MemoryGraph, SUBCLASS_OF, Subject},
     rdfxml,
 };
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(name = "rustbot", version, about, long_about = None)]
 struct Args {
     ///load ontology from a file
     #[arg(short, long, value_name = "file")]
@@ -177,7 +177,8 @@ fn get_descendents(upper_terms: HashSet<String>, graph: &IndexedMemoryGraph) -> 
     output_terms
 }
 
-fn extract(
+// Produce a MemoryGraph with desired terms and all necessary metadata
+fn mireot(
     graph: &IndexedMemoryGraph,
     terms: HashSet<String>,
     version_iri: Option<String>,
@@ -201,8 +202,40 @@ fn extract(
     .iter()
     .map(|x| x.to_string())
     .collect();
+
+    // identify annotation properties used by desired terms
     for subject in graph.subjects() {
+        // catch annotation properties used in relevant axiom annotations
         let mut working_properties: HashSet<String> = HashSet::new();
+        if subject.owl_types().contains(AXIOM) {
+            let preds = subject.predicates();
+            if let Some(source) = preds.get(ANNOTATED_SOURCE) {
+                let mut source_in_terms = false;
+                for obj in source {
+                    if terms.contains(&obj.object()) {
+                        source_in_terms = true;
+                        break;
+                    }
+                }
+                if let Some(target) = preds.get(ANNOTATED_TARGET) {
+                    let mut target_in_terms = false;
+                    for obj in target {
+                        if terms.contains(&obj.object()) {
+                            target_in_terms = true;
+                            break;
+                        }
+                    }
+                    if source_in_terms && target_in_terms {
+                        for (pred, _objs) in preds {
+                            if pred != "http://www.geneontology.org/formats/oboInOwl#notes" {
+                                metadata.insert(pred.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // recursively identify metadata used in the terms themselves
         if terms.contains(&subject.name()) {
             for (pred, _objs) in subject.predicates() {
                 if let Some(pred_as_subj) = graph.get(&pred) {
@@ -230,6 +263,7 @@ fn extract(
         }
     }
 
+    //copy subjects in terms or metadata
     for subject in graph.subjects() {
         if subject.name() == "http://example.com/graph" {
             output_graph.insert(subject.clone());
@@ -304,7 +338,7 @@ fn main() {
         },
     };
 
-    let output_graph = extract(&graph, output_terms, args.version_iri);
+    let output_graph = mireot(&graph, output_terms, args.version_iri);
     let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
     std::fs::write(output_path, output).expect("Write to file");
 }
