@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use tabld::mireot::mireot_terms;
+use tabld::subset::subset_extract;
 use tabld::{mireot::mireot_extract, model::IndexedMemoryGraph, rdfxml};
 
 #[derive(Parser, Debug)]
@@ -187,19 +188,24 @@ fn main() {
         Commands::Subset(args) => {
             let input_path: String = args.input.clone();
             let input_path = Path::new(&input_path);
-            match fs::metadata(input_path) {
-                Ok(_) => (),
+            let rdfxml_input = match fs::metadata(input_path) {
+                Ok(_) => std::fs::read_to_string(input_path).expect("Read from file"),
                 Err(_) => panic!("Input file does not exist"),
-            }
+            };
+            let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
+            let graph = IndexedMemoryGraph::from(graph);
 
             let terms = gather_terms_from_arg(args.term.clone(), args.term_file.clone());
+            let output_terms = match terms {
+                Some(terms) => terms,
+                None => todo!("This should have a --force true option"),
+            };
 
             let output_path: String = args.output.clone();
             let output_path = Path::new(&output_path);
-
-            let rdfxml_input = std::fs::read_to_string(input_path).expect("Read from file");
-            let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
-            let graph = IndexedMemoryGraph::from(graph);
+            let output_graph = subset_extract(&graph, output_terms, args.version_iri.clone());
+            let output = rdfxml::write_to_string(&output_graph).expect("Write to string");
+            std::fs::write(output_path, output).expect("Write to file");
         }
     }
 }

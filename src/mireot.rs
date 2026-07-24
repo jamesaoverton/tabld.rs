@@ -88,24 +88,8 @@ pub fn mireot_terms(
     output_terms
 }
 
-// Produce a MemoryGraph with desired terms and all necessary metadata
-pub fn mireot_extract(
-    graph: &IndexedMemoryGraph,
-    terms: HashSet<String>,
-    version_iri: Option<String>,
-) -> MemoryGraph {
-    let mut output_graph = MemoryGraph::new();
-    let mut ontology = Subject::from_type("http://www.w3.org/2002/07/owl#Ontology");
-    match version_iri {
-        Some(iri) => {
-            ontology.insert("http://www.w3.org/2002/07/owl#versionIRI", Object::id(&iri));
-        }
-        None => (),
-    }
-    ontology.set_name("http://example.com/expected/mireot.owl");
-    output_graph.insert(ontology);
-
-    // gather annotation properties used in the output
+// gather annotation properties used in the output terms
+pub fn get_annotations(graph: &IndexedMemoryGraph, terms: &HashSet<String>) -> HashSet<String> {
     let mut annotation_props: HashSet<String> =
         vec!["http://www.w3.org/2000/01/rdf-schema#isDefinedBy"]
             .iter()
@@ -157,6 +141,27 @@ pub fn mireot_extract(
             }
         }
     }
+    annotation_props
+}
+
+// Produce a MemoryGraph with desired terms and all necessary metadata
+pub fn mireot_extract(
+    graph: &IndexedMemoryGraph,
+    terms: HashSet<String>,
+    version_iri: Option<String>,
+) -> MemoryGraph {
+    let mut output_graph = MemoryGraph::new();
+    let mut ontology = Subject::from_type("http://www.w3.org/2002/07/owl#Ontology");
+    match version_iri {
+        Some(iri) => {
+            ontology.insert("http://www.w3.org/2002/07/owl#versionIRI", Object::id(&iri));
+        }
+        None => (),
+    }
+    ontology.set_name("http://example.com/expected/mireot.owl");
+    output_graph.insert(ontology);
+
+    let annotation_props = get_annotations(graph, &terms);
 
     //copy subjects in terms or metadata
     for subject in graph.subjects() {
