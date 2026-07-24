@@ -322,6 +322,21 @@ impl Object {
         annotatations.push(predicates)
     }
 
+    // Return a copy of this object without annotations.
+    pub fn unannotated(&self) -> Self {
+        match self {
+            Object::ID { id, .. } => Object::id(&id),
+            Object::LanguageLiteral {
+                value, language, ..
+            } => Object::lang(&value, &language),
+            Object::TypedLiteral {
+                value, datatype, ..
+            } => Object::typed(&value, &datatype),
+            Object::List { list, .. } => Object::list(list.clone()),
+            Object::Map { content, .. } => Object::map(content.clone()),
+        }
+    }
+
     // Return a set of all IRIs used in this object, recursively.
     // TODO: Only IRIs not blank nodes?
     pub fn signature(&self) -> BTreeSet<&String> {

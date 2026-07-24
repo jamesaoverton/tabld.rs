@@ -102,7 +102,7 @@ pub fn mireot_extract(
                         if terms.contains(&obj.object())
                             || obj.object() == "http://www.w3.org/2002/07/owl#Thing"
                         {
-                            term.insert(&pred, obj.clone());
+                            term.insert(&pred, obj.unannotated());
                         }
                     } else if pred == "http://www.w3.org/2002/07/owl#equivalentClass" {
                         continue;
