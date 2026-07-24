@@ -1,5 +1,6 @@
 use crate::model::{
-    ANNOTATION_PROPERTY, Graph, IndexedMemoryGraph, MemoryGraph, Object, SUBCLASS_OF, Subject,
+    ANNOTATION_PROPERTY, DISJOINT_WITH, EQUIVALENT_CLASS, Graph, IndexedMemoryGraph, MemoryGraph,
+    Object, SUBCLASS_OF, SUBPROPERTY_OF, Subject,
 };
 use std::collections::{BTreeSet, HashSet};
 
@@ -171,11 +172,11 @@ pub fn mireot_extract(
                         {
                             term.insert(&pred, obj.unannotated());
                         }
-                    } else if pred == "http://www.w3.org/2002/07/owl#equivalentClass" {
+                    } else if pred == EQUIVALENT_CLASS {
                         continue;
-                    } else if pred == "http://www.w3.org/2002/07/owl#disjointWith" {
+                    } else if pred == DISJOINT_WITH {
                         continue;
-                    } else if pred == "http://www.w3.org/2000/01/rdf-schema#subPropertyOf" {
+                    } else if pred == SUBPROPERTY_OF {
                         continue; // this is correct but it may not be intended behavior
                     } else if pred == "http://www.w3.org/2000/01/rdf-schema#range"
                         || obj.object() == "http://www.w3.org/2001/XMLSchema#anyURI"
