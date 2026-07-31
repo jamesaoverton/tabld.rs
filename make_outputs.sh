@@ -96,20 +96,59 @@
 # diff -u expected.owl actual.owl > diff5.txt
 
 
-# 6
+# # 6
+# robot extract \
+# --method mireot \
+# -i uberon.owl  \
+# -b UBERON:0010199 \
+# annotate \
+# --ontology-iri "http://example.com/expected/mireot.owl" \
+# -V "http://example.com/2026-07-17/mireot.owl" \
+# -o expected.owl
+
+# cargo run --release -- mireot \
+# -i uberon.owl \
+# -b UBERON:0010199 \
+# -v "http://example.com/2026-07-17/mireot.owl" \
+# -o actual.owl
+
+# diff -u expected.owl actual.owl > diff6.txt
+
+# 7: IMPERFECT
 robot extract \
---method mireot \
--i uberon.owl  \
--b UBERON:0010199 \
+--method subset \
+-i obi.owl  \
+-t COB:0000035 \
+-t OBI:0000070 \
 annotate \
---ontology-iri "http://example.com/expected/mireot.owl" \
--V "http://example.com/2026-07-17/mireot.owl" \
+--ontology-iri "http://example.com/expected/subset.owl" \
+-V "http://example.com/2026-07-17/subset.owl" \
 -o expected.owl
 
-cargo run --release -- mireot \
--i uberon.owl \
--b UBERON:0010199 \
--v "http://example.com/2026-07-17/mireot.owl" \
+cargo run --release -- subset \
+-i obi.owl  \
+-t COB:0000035 \
+-t OBI:0000070 \
+-v "http://example.com/2026-07-17/subset.owl" \
 -o actual.owl
 
-diff -u expected.owl actual.owl > diff6.txt
+diff -u expected.owl actual.owl > diff7.txt
+
+# 8
+robot extract \
+--method subset \
+-i obi.owl  \
+-T terms8.txt \
+annotate \
+--ontology-iri "http://example.com/expected/subset.owl" \
+-V "http://example.com/2026-07-17/subset.owl" \
+-o expected.owl
+
+cargo run --release -- subset \
+-i obi.owl  \
+-T terms8.txt \
+-v "http://example.com/2026-07-17/subset.owl" \
+-o actual.owl
+
+diff -u expected.owl actual.owl > diff8.txt
+
