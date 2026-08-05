@@ -10,3 +10,5 @@ itertools = "0.14.0"
 quick-xml = "0.40.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
+tree-sitter = "0.20.6"
+tree-sitter-manchester = { git = "https://github.com/ckindermann/tree-sitter-manchester" }
