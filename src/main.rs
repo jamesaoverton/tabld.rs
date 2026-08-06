@@ -1,8 +1,4 @@
-use tabld::{
-    model::{Graph, IndexedMemoryGraph},
-    rdfxml, transducer,
-};
-use tree_sitter::Parser;
+use tabld::{model::Graph, rdfxml};
 
 extern crate tree_sitter_manchester;
 
@@ -31,7 +27,7 @@ fn main() {
     // }
     // println!("SUBJECT {subclasses:#?}");
 
-    let ig = IndexedMemoryGraph::from(graph);
+    // let ig = IndexedMemoryGraph::from(graph);
     // let elapsed = start.elapsed().as_millis() as usize - elapsed;
     // println!("Read into IndexedMemoryGraph in {elapsed}ms");
 
@@ -65,31 +61,6 @@ fn main() {
     // let gi = GraphIndex::from(&graph);
     // let text = gi.text("lung", 5);
     // println!("TEXT {text:#?}");
-
-    let mut parser = Parser::new();
-    parser
-        .set_language(tree_sitter_manchester::language())
-        .expect("Error loading manchester grammar");
-
-    let manchester_string =
-        "'has specified input' some ('material entity' or 'information content entity')";
-    // let manchester_string = "'has specified input' some 'assay'";
-    println!("Manchester String: {manchester_string}");
-    let tree = parser.parse(manchester_string, None).unwrap();
-
-    // println!("Tree: {:#?}", tree);
-    // println!("");
-    // println!("S-Expression: {:#?}", tree.root_node().to_sexp());
-    // println!("");
-    // println!("Has Errors: {:#?}", syntax_checker::has_errors(&tree));
-    // println!("Error Vec: {:#?}", syntax_checker::get_errors(&tree));
-
-    //println!("Serialisation: {:?}", serde_json::to_string(&t).unwrap());
-    // println!("Serialisation: {}", serde_json::to_string(&t).unwrap());
-    // println!("");
-
-    let t = transducer::translate(&ig, manchester_string, &tree.root_node());
-    println!("Translation to Object: {:#?}", t);
 }
 
 // read to string: Maximum resident set size (kbytes): 97,696
