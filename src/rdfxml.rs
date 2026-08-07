@@ -20,8 +20,31 @@ use crate::prefix::Prefixes;
 
 const DEBUG: bool = false;
 
+pub fn read_prefixes(input: &str) -> Result<Prefixes, XMLError> {
+    let mut reader = Reader::from_str(input);
+    // root rdf:RDF element
+    let start;
+    loop {
+        match reader.read_event()? {
+            Event::Start(event) => {
+                start = event.clone();
+                break;
+            }
+            Event::Eof => panic!("No root element"),
+            _ => continue,
+        }
+    }
+    let qname = read_qname(start.name());
+    if qname != "rdf:RDF" {
+        panic!("Document does not use RDFXML format");
+    }
+
+    let value = str::from_utf8(start.attributes_raw()).expect("Valid attributes");
+    inner_read_prefixes(&value)
+}
+
 // Read prefixes from an attribute_raw() string
-fn read_prefixes(content: &str) -> Result<Prefixes, XMLError> {
+fn inner_read_prefixes(content: &str) -> Result<Prefixes, XMLError> {
     let mut prefixes = Prefixes::new();
     let name = "root";
     let elem = BytesStart::from_content(format!("{name}{content}"), name.len());
@@ -90,7 +113,7 @@ pub fn read(input: &str) -> Result<MemoryGraph, XMLError> {
     }
 
     let value = str::from_utf8(start.attributes_raw()).expect("Valid attributes");
-    let prefixes = read_prefixes(&value)?;
+    let prefixes = inner_read_prefixes(&value)?;
 
     // Store prefixes
     let name = prefixes.expand(name);

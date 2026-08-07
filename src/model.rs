@@ -33,6 +33,7 @@ pub const SOME_VALUES_FROM: &str = "http://www.w3.org/2002/07/owl#someValuesFrom
 pub const ALL_VALUES_FROM: &str = "http://www.w3.org/2002/07/owl#allValuesFrom";
 pub const INVERSE_OF: &str = "http://www.w3.org/2002/07/owl#inverseOf";
 pub const INTERSECTION_OF: &str = "http://www.w3.org/2002/07/owl#intersectionOf";
+pub const UNION_OF: &str = "http://www.w3.org/2002/07/owl#unionOf";
 pub const DISTINCT_MEMBERS: &str = "http://www.w3.org/2002/07/owl#distinctMembers";
 pub const AXIOM: &str = "http://www.w3.org/2002/07/owl#Axiom";
 pub const ANNOTATED_SOURCE: &str = "http://www.w3.org/2002/07/owl#annotatedSource";
@@ -729,6 +730,8 @@ pub trait Graph {
 
     fn get_mut(&mut self, id: &str) -> Option<&mut Subject>;
 
+    fn subject_by_label(&self, name: &str) -> Option<&Subject>;
+
     fn signature(&self) -> BTreeSet<&String> {
         self.subjects().iter().flat_map(|s| s.signature()).collect()
     }
@@ -826,6 +829,10 @@ impl Graph for MemoryGraph {
 
     fn get_mut(&mut self, id: &str) -> Option<&mut Subject> {
         self.subjects.get_mut(id)
+    }
+
+    fn subject_by_label(&self, name: &str) -> Option<&Subject> {
+        self.subjects.values().filter(|s| s.label() == name).nth(0)
     }
 
     fn insert(&mut self, subject: Subject) -> Option<Subject> {
@@ -1236,6 +1243,17 @@ impl Graph for IndexedMemoryGraph {
 
     fn subjects(&self) -> BTreeSet<&Subject> {
         self.graph.subjects()
+    }
+
+    fn subject_by_label(&self, name: &str) -> Option<&Subject> {
+        match self.name_subjects.get(name) {
+            Some(subjects) => subjects
+                .iter()
+                .map(|id| self.get(id).unwrap())
+                .filter(|s| s.label() == name)
+                .nth(0),
+            None => None,
+        }
     }
 
     // Return the matching subject, if it exists.
