@@ -16,6 +16,9 @@ pub const DATATYPE: &str = "http://www.w3.org/2000/01/rdf-schema#Datatype";
 pub const STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 pub const BOOLEAN: &str = "http://www.w3.org/2001/XMLSchema#boolean";
 pub const SUBCLASS_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
+pub const SUBPROPERTY_OF: &str = "http://www.w3.org/2000/01/rdf-schema#subPropertyOf";
+pub const EQUIVALENT_CLASS: &str = "http://www.w3.org/2002/07/owl#equivalentClass";
+pub const DISJOINT_WITH: &str = "http://www.w3.org/2002/07/owl#disjointWith";
 pub const OWL: &str = "http://www.w3.org/2002/07/owl#";
 pub const ONTOLOGY: &str = "http://www.w3.org/2002/07/owl#Ontology";
 pub const THING: &str = "http://www.w3.org/2002/07/owl#Thing";
@@ -321,6 +324,21 @@ impl Object {
             Self::Map { annotations, .. } => annotations,
         };
         annotatations.push(predicates)
+    }
+
+    // Return a copy of this object without annotations.
+    pub fn unannotated(&self) -> Self {
+        match self {
+            Object::ID { id, .. } => Object::id(&id),
+            Object::LanguageLiteral {
+                value, language, ..
+            } => Object::lang(&value, &language),
+            Object::TypedLiteral {
+                value, datatype, ..
+            } => Object::typed(&value, &datatype),
+            Object::List { list, .. } => Object::list(list.clone()),
+            Object::Map { content, .. } => Object::map(content.clone()),
+        }
     }
 
     // Return a set of all IRIs used in this object, recursively.
