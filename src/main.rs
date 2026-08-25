@@ -9,6 +9,7 @@ use tabld::{
     mireot::{mireot_extract, mireot_terms},
     model::IndexedMemoryGraph,
     rdfxml::{self, write_to_string},
+    remove::remove,
     util::gather_terms_from_arg,
 };
 
@@ -101,6 +102,30 @@ struct RemoveArgs {
     #[arg(short, long, value_name = "file")]
     output: String,
 
+    ///term to remove
+    #[arg(short = 't', long = "term", value_name = "term")]
+    term: Option<Vec<String>>,
+
+    ///term to force include
+    #[arg(short = 'n', long = "include-term", value_name = "term")]
+    include_term: Option<Vec<String>>,
+
+    ///term to exclude from removal
+    #[arg(short = 'e', long = "exclude-term", value_name = "term")]
+    exclude_term: Option<Vec<String>>,
+
+    ///set of terms in text file to remove
+    #[arg(short = 'T', long = "term-file", value_name = "textfile")]
+    term_file: Option<Vec<String>>,
+
+    ///set of terms in text file to force include
+    #[arg(short = 'N', long = "include-terms", value_name = "textfile")]
+    include_terms: Option<Vec<String>>,
+
+    ///term to exclude from removal
+    #[arg(short = 'E', long = "exclude-terms", value_name = "textfile")]
+    exclude_terms: Option<Vec<String>>,
+
     ///set the version iri of the output file
     #[arg(short = 'v', long = "version-iri", value_name = "iri")]
     version_iri: Option<String>,
@@ -177,7 +202,24 @@ fn main() {
         }
 
         Commands::Remove(args) => {
-            println!("Doing remove");
+            let input: String = args.input.clone();
+            let input_path: &Path = Path::new(&input);
+            let rdfxml_input = match metadata(input_path) {
+                Ok(_) => read_to_string(input_path).expect("Read from file"),
+                Err(_) => panic!("Input file does not exist"),
+            };
+            let graph = rdfxml::read(&rdfxml_input).expect("Read from string");
+            let graph = IndexedMemoryGraph::from(graph);
+            let terms = gather_terms_from_arg(args.term.clone(), args.term_file.clone());
+            let include =
+                gather_terms_from_arg(args.include_term.clone(), args.include_terms.clone());
+            let exclude =
+                gather_terms_from_arg(args.exclude_term.clone(), args.exclude_terms.clone());
+            let output_path: String = args.output.clone();
+            let output_path = Path::new(&output_path);
+            let output_graph = remove(&graph, terms, include, exclude, args.version_iri.clone());
+            let output = write_to_string(&output_graph).expect("Write to string");
+            std::fs::write(output_path, output).expect("Write to file");
         }
     }
 }
