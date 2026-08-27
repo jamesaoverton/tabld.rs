@@ -1,6 +1,6 @@
+pub mod extract;
 pub mod manchester;
 pub mod merge;
-pub mod mireot;
 pub mod model;
 pub mod prefix;
 pub mod rdfxml;

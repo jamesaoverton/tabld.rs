@@ -2,7 +2,7 @@ use crate::model::{
     ANNOTATION_PROPERTY, DISJOINT_WITH, EQUIVALENT_CLASS, Graph, IndexedMemoryGraph, MemoryGraph,
     Object, SUBCLASS_OF, SUBPROPERTY_OF, Subject,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 // Return a BTreeSet of only ancestors of lower terms that are beneath the upper terms
 fn filter_terms(
@@ -195,5 +195,82 @@ pub fn mireot_extract(
             output_graph.insert(term);
         }
     }
+    output_graph
+}
+
+pub fn subset_extract(
+    graph: &IndexedMemoryGraph,
+    terms: BTreeSet<String>,
+    version_iri: Option<String>,
+) -> MemoryGraph {
+    let mut output_graph = MemoryGraph::new();
+    let mut ontology = Subject::from_type("http://www.w3.org/2002/07/owl#Ontology");
+    match version_iri {
+        Some(iri) => {
+            ontology.insert("http://www.w3.org/2002/07/owl#versionIRI", Object::id(&iri));
+        }
+        None => (),
+    }
+    ontology.set_name("http://example.com/expected/subset.owl");
+    output_graph.insert(ontology);
+
+    let annotation_props = get_annotations(graph, &terms);
+
+    for subject in graph.subjects() {
+        if subject.name() == "http://example.com/graph" {
+            output_graph.insert(subject.clone());
+        }
+        if !terms.contains(&subject.name()) {
+            continue;
+        }
+        let mut new_subj = Subject::from_name(&subject.name());
+        let mut keep_edges: BTreeMap<&String, BTreeSet<&String>> = BTreeMap::new();
+        for (pred, objs) in graph.edges(&subject.name()) {
+            if pred == SUBCLASS_OF
+                || terms.contains(pred.as_str())
+                || annotation_props.contains(pred.as_str())
+            {
+                for obj in objs {
+                    if terms.contains(obj.as_str()) {
+                        if keep_edges.contains_key(pred) {
+                            let mut obj_set = keep_edges[pred].clone();
+                            obj_set.insert(obj);
+                            keep_edges.insert(pred, obj_set);
+                        } else {
+                            let mut obj_set = BTreeSet::new();
+                            obj_set.insert(obj);
+                            keep_edges.insert(pred, obj_set);
+                        }
+                    }
+                }
+            }
+        }
+        for (pred, objs) in subject.predicates() {
+            if keep_edges.contains_key(&pred) {
+                for obj in objs {
+                    match obj.clone() {
+                        Object::ID { id, .. } => {
+                            if keep_edges[&pred].contains(&id) {
+                                new_subj.insert(&pred, obj);
+                            }
+                        }
+                        Object::LanguageLiteral { .. } => {}
+                        Object::TypedLiteral { .. } => {}
+                        Object::List { list: _, .. } => {
+                            // TODO: rework recursive function I used for remove to apply here
+                        }
+                        Object::Map { content: _, .. } => {
+                            // TODO: rework recursive function I used for remove to apply here
+                        }
+                    }
+                }
+            }
+        }
+        println!("{:#?}", new_subj);
+        output_graph.insert(new_subj);
+    }
+    // for subj in output_graph.subjects() {
+    //     println!("{:#?}", subj);
+    // }
     output_graph
 }
